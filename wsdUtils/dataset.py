@@ -3,6 +3,7 @@ import json
 import jsonpickle
 import argparse
 import os
+from typing import List
 
 """
 Defines the data format for the pipeline scripts train/eval for wsd.
@@ -31,9 +32,11 @@ Optional fields for instances are:
 Instances can contain additional fields without interfering, but they will not be used/considered by these functions.
 Its important that the 'lemma' and 'pos' field for the whole instance matches those for the specific target token. 
 """
-# TODO: CLI for splitting, converting, tokenizing
+# TODO: tokenizing
 # TODO: Tokenizer
-# TODO: Eval tokenizers, maybe nltk german tokenizer/pos-taggers are fine? Would make process much simpler.
+# TODO: Eval other non-java tokenizers,
+#  maybe nltk german tokenizer/pos-taggers are fine? Would make process much simpler.
+
 VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
 
 
@@ -62,7 +65,7 @@ class WSDEntry:
         
         
 class WSDData:
-    def __init__(self, name: str, lang: str, labeltype: str, entries=[]):
+    def __init__(self, name: str, lang: str, labeltype: str, entries: List[WSDEntry] = []):
         assert labeltype in VALID_LABELTYPES
         self.name = name
         self.entries = entries
@@ -131,7 +134,8 @@ class WSDData:
             
     def add(self, other):
         """ Merges the other dataset into this one. This can only be done if both have the same language"""
-        assert self.lang == other.lang
+        assert self.lang == other.lang, "Can only merge two datasets of the same language!"
+        assert self.labeltype == other.labeltype, "Can only merge to datasets with the same labeltype!"
         self.name = self.name + "+" + other.name
         self.entries.extend(other.entries)
         
