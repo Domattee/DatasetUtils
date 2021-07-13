@@ -1,9 +1,9 @@
 from setuptools import setup
 
 setup(
-    name='wsdData',
+    name='wsdUtils',
     version='0.1',
-    packages=['wsdData'],
+    packages=['wsdUtils'],
     url='',
     license='',
     author='Dominik Mattern',
