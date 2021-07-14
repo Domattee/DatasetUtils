@@ -13,7 +13,7 @@ Files are JSON Objects containing the following fields:
 'labeltype': What type of labels this dataset uses. Must be one of ["wnoffsets", "bnids", "gn"].
 'entries': A list of Objects, each representing a single training/disambiguation instance that must contain the 
     following fields for EWISER processing:
-    'label': String, Gold label for disambiguation. This must be either wordnet offsets or babelnet ids.
+    'label': String, Gold label for disambiguation. This must be either wordnet offsets, babelnet ids or germanet ids 
     'lemma': String, target lemma for disambiguation.
     'upos': String, target pos. Must be either 'NOUN', 'VERB', 'ADJ' or 'ADV'
     'tokens': A list of json objects which each object representing a token. Tokens must have the fields:
@@ -41,7 +41,7 @@ VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
 
 
 class WSDToken:
-    def __init__(self, form: str, lemma: str, pos: str, begin: str, end: str, upos=None, is_pivot=False):
+    def __init__(self, form: str, lemma: str, pos: str, begin: int, end: int, upos: str = None, is_pivot: bool = False):
         self.form = form
         self.lemma = lemma
         self.pos = pos
@@ -53,7 +53,7 @@ class WSDToken:
         
 class WSDEntry:
     def __init__(self, label: str, lemma: str, upos: str, tokens=[],
-                 sentence=None, source_id=None, pivot_start=None, pivot_end=None):
+                 sentence: str = None, source_id: str = None, pivot_start: int = None, pivot_end: int = None):
         self.label = label
         self.lemma = lemma
         self.tokens = tokens
@@ -95,7 +95,11 @@ class WSDData:
                 sentence = cls._load_opt(entry, "sentence", default=None)
                 source = cls._load_opt(entry, "source_id", default=None)
                 pivot_start = cls._load_opt(entry, "pivot_start", default=None)
+                if pivot_start is not None:
+                    pivot_start = int(pivot_start)
                 pivot_end = cls._load_opt(entry, "pivot_end", default=None)
+                if pivot_end is not None:
+                    pivot_end = int(pivot_end)
 
                 l_tokens = []
                 if "tokens" in entry:
@@ -109,9 +113,9 @@ class WSDData:
                         else:
                             # Do the pos to upos conversion, assuming STTS tagset
                             upos = pos_2_upos(pos)
-                        begin = token["begin"]
-                        end = token["end"]
-                        is_pivot = token["is_pivot"]
+                        begin = int(token["begin"])
+                        end = int(token["end"])
+                        is_pivot = bool(token["is_pivot"])
                         l_tokens.append(WSDToken(form, lemma, pos, begin, end, upos=upos, is_pivot=is_pivot))
                         
                 entries.append(
