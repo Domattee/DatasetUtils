@@ -49,11 +49,17 @@ class WSDToken:
         self.begin = begin
         self.end = end
         self.is_pivot = is_pivot
+
+    def __str__(self):
+        rep_items = [self.form, self.lemma, self.pos, self.upos, self.begin, self.end, self.is_pivot]
+        return "\t".join(map(lambda x: str(x), rep_items))
         
         
 class WSDEntry:
-    def __init__(self, label: str, lemma: str, upos: str, tokens=[],
+    def __init__(self, label: str, lemma: str, upos: str, tokens: List[WSDToken] = None,
                  sentence: str = None, source_id: str = None, pivot_start: int = None, pivot_end: int = None):
+        if tokens is None:
+            tokens = []
         self.label = label
         self.lemma = lemma
         self.tokens = tokens
@@ -62,15 +68,26 @@ class WSDEntry:
         self.source_id = source_id
         self.pivot_start = pivot_start
         self.pivot_end = pivot_end
+
+    def __str__(self):
+        rep_items = [self.label, self.lemma, self.pivot_start, self.pivot_end, self.source_id,
+                     "{} tokens".format(len(self.tokens))]
+        return "\t".join(map(lambda x: str(x), rep_items))
         
         
 class WSDData:
-    def __init__(self, name: str, lang: str, labeltype: str, entries: List[WSDEntry] = []):
+    def __init__(self, name: str, lang: str, labeltype: str, entries: List[WSDEntry] = None):
         assert labeltype in VALID_LABELTYPES
+        if entries is None:
+            entries = []
         self.name = name
         self.entries = entries
         self.lang = lang
         self.labeltype = labeltype
+
+    def __str__(self):
+        return "Dataset {}, language {}, labels {} with {} entries".format(self.name,
+                                                                           self.lang, self.labeltype, len(self.entries))
 
     @classmethod
     def _load_opt(cls, entry, key: str, default=None):
@@ -158,6 +175,51 @@ class WSDData:
         self.entries = mapped_entries
         self.labeltype = new_labeltype
 
+    def filter(self, ambiguous: bool = False):
+        # Build info on dataset
+        lemma_sense_map = {}
+        for entry in self.entries:
+            key = entry.lemma + "#" + entry.upos
+            if key in lemma_sense_map:
+                lemma_sense_map[key].add(entry.label)
+            else:
+                lemma_sense_map[key] = {entry.label}
+
+        # Apply filters
+        filtered = self.entries
+        if ambiguous:  # Filter out all which are not ambiguous
+            tmp = [entry for entry in filtered if len(lemma_sense_map[entry.lemma + "#" + entry.upos]) > 1]
+            filtered = tmp
+
+        # Apply filter to current dataset
+        self.entries = filtered
+
+    def get_statistics(self):
+        lemma_sense_map = {}
+        sense_dist = {}
+        labels = set()
+
+        for entry in self.entries:
+            key = entry.lemma + "#" + entry.upos
+            labels.add(entry.label)
+            if key in lemma_sense_map:
+                lemma_sense_map[key].add(entry.label)
+            else:
+                lemma_sense_map[key] = {entry.label}
+
+        for key in lemma_sense_map:
+            count = len(lemma_sense_map[key])
+            if count in sense_dist:
+                sense_dist[count] += 1
+            else:
+                sense_dist[count] = 1
+        print("Instances: {}".format(len(self.entries)))
+        print("Distinct senses: {}".format(len(labels)))
+        print("Distinct lemmas: {}".format(len(lemma_sense_map)))
+        print("Distribution of lemmas with x senses:")
+        for i in sorted(sense_dist):
+            print("{} lemmas with {} senses".format(sense_dist[i], i))
+
 
 def load_mapping(map_path: str, first_only=True):
     map_dict = {}
@@ -194,7 +256,7 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2):
 
     for label, entries in entries_by_label.items():
         # Dump labels with single instance
-        if len(entries) == 1:
+        if len(entries) <= 1:
             continue
 
         # Fix sizes for low count labels to ensure we have at least one in train/eval/test if at all possible
@@ -225,11 +287,6 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2):
     return trainset, evalset, testset
 
 
-def tokenize(dataset: WSDData):
-    # Run the Java UIMA thingy somehow
-    pass
-    
-    
 def pos_2_upos(pos: str):
     STTS = {"$(": "PUNCT",
             "$,": "PUNCT",
@@ -295,7 +352,7 @@ def cli():
                                                  " converting labels according to some mapping")
     subparsers = parser.add_subparsers(help="Either 'split' to split a dataset into train/test eval "
                                             "or 'convert' to convert dataset labels",
-                                       dest="action")
+                                       dest="action", required=True)
 
     split_parser = subparsers.add_parser("split")
     split_parser.add_argument("-d", "--data", required=True, type=str,
@@ -320,15 +377,15 @@ def cli():
                                 help="If this flag is set, entries which cannot be mapped will be skipped")
 
     args = parser.parse_args()
-
-    dataset = WSDData.load(args.data)
+    
+    dataset = WSDData.load(os.path.abspath(args.data))
 
     if args.action == "split":
         basename = os.path.splitext(os.path.basename(args.data))[0]
         trainset, evalset, testset = train_test_split(dataset, args.ratio_eval, args.ratio_test)
-        trainset.save(os.path.join(args.out, basename + "_train.json"))
-        evalset.save(os.path.join(args.out, basename + "_eval.json"))
-        testset.save(os.path.join(args.out, basename + "_test.json"))
+        trainset.save(os.path.abspath(os.path.join(args.out, basename + "_train.json")))
+        evalset.save(os.path.abspath(os.path.join(args.out, basename + "_eval.json")))
+        testset.save(os.path.abspath(os.path.join(args.out, basename + "_test.json")))
     elif args.action == "convert":
         mapping = load_mapping(args.mapping, first_only=True)
         if args.skip:
@@ -337,3 +394,7 @@ def cli():
             no_map = "raise"
         dataset.map_labels(mapping, args.new_labeltype, no_map=no_map)
         dataset.save(args.out)
+
+
+if __name__ == "__main__":
+    cli()
