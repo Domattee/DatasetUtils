@@ -13,10 +13,11 @@ Tokenize with NLTK and use TreeTagger for POS and lemma
 class Tokenizer:
 
     def __init__(self, tagger_path: str = DEFAULT_TAGGER_PATH, lang: str = "de"):
-        self.tagger = ttw.TreeTagger(TAGLANG="de", TAGDIR=tagger_path)
         if lang != "de":
             raise NotImplementedError
-        self.lang = lang
+        else:
+            self.tagger = ttw.TreeTagger(TAGLANG="de", TAGDIR=tagger_path)
+            self.lang = lang
 
     def tokenize_raw(self, text: str):
         """

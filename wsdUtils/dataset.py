@@ -3,6 +3,7 @@ import json
 import jsonpickle
 import argparse
 import os
+import random
 from typing import List
 
 """
@@ -235,7 +236,7 @@ def load_mapping(map_path: str, first_only=True):
     return map_dict         
 
 
-def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2):
+def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=True):
     # Split dataset into train/eval/test datasets with stratification using the gold labels
     assert ratio_eval + ratio_test <= 1.0
     assert ratio_eval >= 0.0
@@ -280,6 +281,8 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2):
                 eval_size = 0
                 train_size = 1
 
+        if shuffle:
+            random.shuffle(entries)
         evalset.entries.extend(entries[:eval_size])
         testset.entries.extend(entries[eval_size:eval_size+test_size])
         trainset.entries.extend(entries[eval_size+test_size:])
@@ -363,6 +366,8 @@ def cli():
                               help="ratio of the datasets that will be used as test data")
     split_parser.add_argument("-o", "--out", required=True, type=str,
                               help="Output directory. Three files will be created with train/eval/test suffixes.")
+    split_parser.add_argument("-s, --shuffle", required=False, action="store_true",
+                              help="If this flag is set the dataset is shuffled before splitting.")
 
     convert_parser = subparsers.add_parser("convert")
     convert_parser.add_argument("-d", "--data", required=True, type=str,
