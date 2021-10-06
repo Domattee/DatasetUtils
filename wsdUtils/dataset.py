@@ -221,6 +221,31 @@ class WSDData:
         for i in sorted(sense_dist):
             print("{} lemmas with {} senses".format(sense_dist[i], i))
 
+    def mfs(self):
+        per_lemma_sense_counts = {}
+        # Count sense occurences for each lemma
+        for entry in self.entries:
+            if entry.lemma in per_lemma_sense_counts:
+                if entry.label in per_lemma_sense_counts[entry.lemma]:
+                    per_lemma_sense_counts[entry.lemma][entry.label] += 1
+                else:
+                    per_lemma_sense_counts[entry.lemma][entry.label] = 1
+            else:
+                per_lemma_sense_counts[entry.lemma] = {entry.label: 1}
+
+        # Get most frequent sense
+        most_frequent_senses = {}
+        for lemma in per_lemma_sense_counts:
+            mfs = None
+            count = -1
+            for sense in per_lemma_sense_counts[lemma]:
+                if per_lemma_sense_counts[lemma][sense] > count:
+                    mfs = sense
+                    count = per_lemma_sense_counts[lemma][sense]
+            most_frequent_senses[lemma] = mfs
+
+        return most_frequent_senses
+
 
 def load_mapping(map_path: str, first_only=True):
     map_dict = {}
@@ -287,6 +312,10 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=T
         testset.entries.extend(entries[eval_size:eval_size+test_size])
         trainset.entries.extend(entries[eval_size+test_size:])
 
+    if shuffle:
+        random.shuffle(trainset.entries)
+        random.shuffle(evalset.entries)
+        random.shuffle(testset.entries)
     return trainset, evalset, testset
 
 
@@ -366,7 +395,7 @@ def cli():
                               help="ratio of the datasets that will be used as test data")
     split_parser.add_argument("-o", "--out", required=True, type=str,
                               help="Output directory. Three files will be created with train/eval/test suffixes.")
-    split_parser.add_argument("-s, --shuffle", required=False, action="store_true",
+    split_parser.add_argument("-s", "--shuffle", required=False, action="store_true",
                               help="If this flag is set the dataset is shuffled before splitting.")
 
     convert_parser = subparsers.add_parser("convert")
@@ -387,7 +416,7 @@ def cli():
 
     if args.action == "split":
         basename = os.path.splitext(os.path.basename(args.data))[0]
-        trainset, evalset, testset = train_test_split(dataset, args.ratio_eval, args.ratio_test)
+        trainset, evalset, testset = train_test_split(dataset, args.ratio_eval, args.ratio_test, shuffle=args.shuffle)
         trainset.save(os.path.abspath(os.path.join(args.out, basename + "_train.json")))
         evalset.save(os.path.abspath(os.path.join(args.out, basename + "_eval.json")))
         testset.save(os.path.abspath(os.path.join(args.out, basename + "_test.json")))
