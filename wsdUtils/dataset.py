@@ -176,19 +176,30 @@ class WSDData:
         self.entries = mapped_entries
         self.labeltype = new_labeltype
 
-    def filter(self, ambiguous: bool = False):
-        # Build info on dataset
-        lemma_sense_map = {}
-        for entry in self.entries:
-            key = entry.lemma + "#" + entry.upos
-            if key in lemma_sense_map:
-                lemma_sense_map[key].add(entry.label)
-            else:
-                lemma_sense_map[key] = {entry.label}
-
-        # Apply filters
+    def filter(self, ambiguous: bool = False, label_count_limit: int = None):
         filtered = self.entries
-        if ambiguous:  # Filter out all which are not ambiguous
+
+        # Filter out all labels with a count below the limit
+        if label_count_limit:
+            assert label_count_limit >= 0
+            label_counts = {}
+            for entry in self.entries:
+                if entry.label in label_counts:
+                    label_counts[entry.label] += 1
+                else:
+                    label_counts[entry.label] = 1
+            tmp = [entry for entry in filtered if label_counts[entry.label] >= label_count_limit]
+            filtered = tmp
+
+        # Filter out lemmas which are not ambiguous in dataset
+        if ambiguous:
+            lemma_sense_map = {}
+            for entry in filtered:
+                key = entry.lemma + "#" + entry.upos
+                if key in lemma_sense_map:
+                    lemma_sense_map[key].add(entry.label)
+                else:
+                    lemma_sense_map[key] = {entry.label}
             tmp = [entry for entry in filtered if len(lemma_sense_map[entry.lemma + "#" + entry.upos]) > 1]
             filtered = tmp
 
@@ -286,25 +297,17 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=T
             continue
 
         # Fix sizes for low count labels to ensure we have at least one in train/eval/test if at all possible
-        eval_size = math.floor(len(entries)*ratio_eval)
-        if eval_size == 0 and ratio_eval > 0.0 and len(entries) >= 3:
-            eval_size = 1
-
-        test_size = math.floor(len(entries)*ratio_test)
-        if test_size == 0 and ratio_test > 0.0 and len(entries) >= 2:
+        elif len(entries) == 2:
+            eval_size = 0
             test_size = 1
-
-        train_size = len(entries) - eval_size - test_size
-        if train_size == 0 and ratio_eval + ratio_test < 1.0:
-            if eval_size > 1:
-                eval_size = eval_size - 1
-                train_size += 1
-            elif test_size > 1:
-                test_size = test_size - 1
-                train_size += 1
-            elif eval_size == 1 and len(entries) == 2:
-                eval_size = 0
-                train_size = 1
+        else:
+            eval_size = math.floor(len(entries)*ratio_eval)
+            test_size = math.floor(len(entries) * ratio_test)
+            if test_size == 0 and ratio_test > 0.0:
+                test_size = 1
+            if eval_size == 0 and ratio_eval > 0.0:
+                eval_size = 1
+            train_size = len(entries) - eval_size - test_size
 
         if shuffle:
             random.shuffle(entries)
