@@ -33,10 +33,8 @@ Optional fields for instances are:
 Instances can contain additional fields without interfering, but they will not be used/considered by these functions.
 Its important that the 'lemma' and 'pos' field for the whole instance matches those for the specific target token. 
 """
-# TODO: tokenizing
-# TODO: Tokenizer
-# TODO: Eval other non-java tokenizers,
-#  maybe nltk german tokenizer/pos-taggers are fine? Would make process much simpler.
+# TODO: Should probably redo the entire format, replace with proper db or raganato or something, files are very large
+#  Should be able to keep interface
 
 VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
 
@@ -98,12 +96,16 @@ class WSDData:
             return default
         
     @classmethod
-    def load(cls, json_path: str):
+    def load(cls, json_path: str, correct_pivot_tokens: bool = True):
+        """ correct_pivot_tokens replaces upos and lemma data for tokens with is_pivot==True with the entry upos and
+        lemma fields. This can help correct issues where the token information is incorrect due to automatic taggers.
+        We are assumming that entry information is correct here due to manual annotation"""
         with open(json_path, "r", encoding="utf8") as f:
             loaded = json.load(f)
             lang = loaded["lang"]
             name = loaded["name"]
             labeltype = loaded["labeltype"]
+            assert labeltype in VALID_LABELTYPES
             entries = []
             for entry in loaded["entries"]:
                 label = entry["label"]
@@ -126,7 +128,7 @@ class WSDData:
                         form = token["form"]
                         lemma = token["lemma"]
                         pos = token["pos"]
-                        if "upos" in token:
+                        if "upos" in token and token["upos"] is not None and token["upos"] != "None":
                             upos = token["upos"]
                         else:
                             # Do the pos to upos conversion, assuming STTS tagset
@@ -134,6 +136,10 @@ class WSDData:
                         begin = int(token["begin"])
                         end = int(token["end"])
                         is_pivot = bool(token["is_pivot"])
+                        if is_pivot and correct_pivot_tokens:
+                            # Correct lemmatization/pos tagging errors from tokenizer by setting them to entry data
+                            lemma = target_lemma
+                            upos = entry_pos
                         l_tokens.append(WSDToken(form, lemma, pos, begin, end, upos=upos, is_pivot=is_pivot))
                         
                 entries.append(
@@ -150,6 +156,7 @@ class WSDData:
             return cls(name, lang, labeltype, entries)
                 
     def save(self, outpath: str):
+        # TODO: Speed this up, seems slow
         out = jsonpickle.encode(self, unpicklable=False, indent=2)
         with open(outpath, "w+", encoding="utf8") as f:
             f.write(out)
@@ -161,9 +168,13 @@ class WSDData:
         self.name = self.name + "+" + other.name
         self.entries.extend(other.entries)
         
-    def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip"):
-        # TODO: What to do if we have multiple values for keys in dict?
+    def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip", in_place: bool = True):
+        # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
+        #  though because of memory
+        if not in_place:
+            raise NotImplementedError
         mapped_entries = []
+        assert new_labeltype in VALID_LABELTYPES
         for entry in self.entries:
             if entry.label in mapping_dict:
                 entry.label = mapping_dict[entry.label]
@@ -172,13 +183,19 @@ class WSDData:
                 if no_map == "skip":
                     continue
                 elif no_map == "raise":
-                    raise RuntimeWarning("No mapping for entries with label {}".format(entry.label)) 
-        self.entries = mapped_entries
-        self.labeltype = new_labeltype
+                    raise RuntimeWarning("No mapping for entries with label {}".format(entry.label))
+        if not in_place:
+            return WSDData(self.name, lang=self.lang, labeltype=new_labeltype, entries=mapped_entries)
+        else:
+            self.entries = mapped_entries
+            self.labeltype = new_labeltype
 
-    def filter(self, ambiguous: bool = False, label_count_limit: int = None):
+    def filter(self, ambiguous: bool = False, label_count_limit: int = None, in_place: bool = True):
         filtered = self.entries
-
+        # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
+        #  though because of memory
+        if not in_place:
+            raise NotImplementedError
         # Filter out all labels with a count below the limit
         if label_count_limit:
             assert label_count_limit >= 0
@@ -203,8 +220,10 @@ class WSDData:
             tmp = [entry for entry in filtered if len(lemma_sense_map[entry.lemma + "#" + entry.upos]) > 1]
             filtered = tmp
 
-        # Apply filter to current dataset
-        self.entries = filtered
+        if not in_place:
+            return WSDData(self.name, lang=self.lang, labeltype=self.labeltype, entries=filtered)
+        else:
+            self.entries = filtered
 
     def get_statistics(self):
         lemma_sense_map = {}
