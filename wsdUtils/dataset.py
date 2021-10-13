@@ -4,7 +4,10 @@ import jsonpickle
 import argparse
 import os
 import random
+
 from typing import List
+from nltk.corpus import wordnet as wn
+from lxml import etree as et
 
 """
 Defines the data format for the pipeline scripts train/eval for wsd.
@@ -35,7 +38,8 @@ Its important that the 'lemma' and 'pos' field for the whole instance matches th
 """
 # TODO: Should probably redo the entire format, replace with proper db or raganato or something, files are very large
 #  Should be able to keep interface
-
+# TODO: Especially should turn valid labeltypes into an enum or something of the sort, so we don't have to adjust a
+#  dozen files if we change names
 VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
 
 
@@ -55,6 +59,7 @@ class WSDToken:
         
         
 class WSDEntry:
+    # TODO: Replace sentence with a function based on tokens, make tokens non-optional
     def __init__(self, label: str, lemma: str, upos: str, tokens: List[WSDToken] = None,
                  sentence: str = None, source_id: str = None, pivot_start: int = None, pivot_end: int = None):
         if tokens is None:
@@ -154,7 +159,85 @@ class WSDData:
                         pivot_end=pivot_end
                         ))
             return cls(name, lang, labeltype, entries)
-                
+
+    @classmethod
+    def load_raganato(cls, xml_path: str, target_upos: str = None, lang: str = "en",
+                      input_keys: str = "sensekeys", name: str = None):
+        assert xml_path.endswith(".data.xml"), "Must provide path to raganato xml"
+        label_path = xml_path.replace('.data.xml', '.gold.key.txt')
+        if name is None:
+            name = os.path.basename(xml_path).replace(".data.xml", "")
+        # Load in gold labels
+        gold_labels = {}
+        with open(label_path, "rt", encoding="utf8") as f:
+            for line in f:
+                line = line.strip().split(" ")
+                instance_id = line[0]
+                labels = line[1:]  # Currently ignore all labels other than last
+                if input_keys == "wnoffsets":
+                    gold_labels[instance_id] = labels[0]
+                elif input_keys == "sensekeys":
+                    # Convert sensekeys
+                    offsets = [wnoffset_from_sense_key(label) for label in labels]
+                    gold_labels[instance_id] = offsets[0]
+                else:
+                    raise NotImplementedError
+
+        parser = et.XMLParser()
+        xml_corpus = et.parse(xml_path, parser).getroot()
+        # Go through each sentence
+        entries = []
+        for xml_text in xml_corpus.getchildren():
+            for xml_sentence in xml_text.getchildren():
+                # Create token list and find disambiguation instances
+                tokens = []
+                pivots = []
+                char_position = 0
+                token_idx = 0
+                for xml_token in xml_sentence.getchildren():
+                    token_type = xml_token.tag
+
+                    lemma = xml_token.attrib["lemma"]
+                    upos = xml_token.attrib["pos"]
+                    if upos == ".":
+                        upos = "PUNCT"
+                    form = xml_token.text
+                    begin = char_position
+                    end = char_position + len(form)
+                    char_position += len(form) + 1
+
+                    if token_type == "instance" and (target_upos is None or upos == target_upos):
+                        instance_id = xml_token.attrib["id"]
+                        pivots.append((token_idx, instance_id, lemma))
+                    tokens.append(WSDToken(form, lemma, upos, begin, end, upos, is_pivot=False))
+                    token_idx += 1
+                # Create new entry for each instance
+                for pivot in pivots:
+                    pivot_idx, instance_id, lemma = pivot
+                    label = gold_labels[instance_id]
+                    pivot_token = tokens[pivot_idx]
+                    pivot_token_corrected = WSDToken(pivot_token.form,
+                                                     pivot_token.lemma,
+                                                     pivot_token.pos,
+                                                     pivot_token.begin,
+                                                     pivot_token.end,
+                                                     pivot_token.upos,
+                                                     is_pivot=True)
+                    entry_tokens = tokens[:]  # Copy token list
+                    entry_tokens[pivot_idx] = pivot_token_corrected
+                    sentence = " ".join([token.form for token in entry_tokens])
+                    entry = WSDEntry(label,
+                                     lemma,
+                                     target_upos,
+                                     tokens=entry_tokens,
+                                     sentence=sentence,
+                                     source_id=instance_id,
+                                     pivot_start=pivot_token.begin,
+                                     pivot_end=pivot_token.end)
+                    entries.append(entry)
+
+        return cls(name=name, lang=lang, labeltype="wnoffsets", entries=entries)
+
     def save(self, outpath: str):
         # TODO: Speed this up, seems slow
         out = jsonpickle.encode(self, unpicklable=False, indent=2)
@@ -399,6 +482,12 @@ def pos_2_upos(pos: str):
             "XY": "X"
             }
     return STTS[pos]
+
+
+def wnoffset_from_sense_key(sense_key: str):
+    syn = wn.synset_from_sense_key(sense_key)
+    offset = "wn:" + "{:08d}".format(syn.offset()) + syn.pos()
+    return offset
 
 
 def cli():

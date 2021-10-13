@@ -2,5 +2,8 @@ jsonpickle~=2.0.0
 sklearn
 tabulate
 treetaggerwrapper
+jsonpickle
+nltk
+lxml
 # Also have to install TreeTagger itself. Structure should be DatasetUtils/TreeTagger/*
 # Installing TreeTagger simply means putting its files in the correct directory
