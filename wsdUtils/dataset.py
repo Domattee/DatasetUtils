@@ -225,6 +225,7 @@ class WSDData:
                     pivot_start=pivot_start,
                     pivot_end=pivot_end
                 )
+            dataset._sentences = sentences
         return dataset
 
     @classmethod
