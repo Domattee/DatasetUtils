@@ -398,7 +398,7 @@ class WSDData:
         n_splits = n_sentences // sentence_limit + 1
         split_size = n_sentences // n_splits
 
-        idxs = list(dataset._sentence_cache.keys())
+        idxs = list(dataset._sentences.keys())
         for i in range(n_splits-1):
             new = cls(dataset.name, dataset.lang, dataset.labeltype)
             for idx in idxs[i*split_size:(i+1)*split_size]:
