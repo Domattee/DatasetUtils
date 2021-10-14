@@ -317,7 +317,11 @@ class WSDData:
         parser = et.XMLParser()
         xml_corpus = et.parse(xml_path, parser).getroot()
         # Go through each sentence
-        for xml_text in xml_corpus.getchildren():
+        for i, xml_text in enumerate(xml_corpus.getchildren()):
+            if "source" in xml_text.attrib["source"]:
+                source = xml_text.attrib["source"]
+            else:
+                source = name + "_" + str(i)
             for xml_sentence in xml_text.getchildren():
                 # Create token list and find disambiguation instances
                 tokens = []
@@ -349,7 +353,7 @@ class WSDData:
                                       upos,
                                       sentence,
                                       tokens=tokens,
-                                      source_id=instance_id,
+                                      source_id=source,
                                       pivot_start=pivot_start,
                                       pivot_end=pivot_end)
         return dataset
@@ -370,6 +374,17 @@ class WSDData:
         self.name = self.name + "+" + other.name
         for entry in other.entries:
             self.add_entry(**entry.get_dict())
+
+    @classmethod
+    def split(cls, dataset: 'WSDData', n_splits: int):
+        """ Splits this dataset into n smaller datasets"""
+        split_size = len(dataset.entries) // n_splits
+        datasets = []
+        i = 3
+        new = cls(dataset.name, dataset.lang, dataset.labeltype)
+        for entry in dataset.entries[i*split_size:(i+1)*split_size]:
+            new.add_entry(entry.get_dict())
+
         
     def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip", in_place: bool = True):
         # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
