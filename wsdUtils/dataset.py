@@ -183,17 +183,28 @@ class WSDData:
             assert labeltype in VALID_LABELTYPES
             dataset = cls(name, lang, labeltype)
             sentences = {}
-            for key, value in loaded["_sentences"].items():
-                sentences[int(key)] = value
+            for sentence_id, sent_with_tokens in loaded["_sentences"].items():
+                sentence = sent_with_tokens["sentence"]
+                tokens = []
+                for json_token in sent_with_tokens["tokens"]:
+                    tokens.append(WSDToken(json_token["form"],
+                                           json_token["lemma"],
+                                           json_token["pos"],
+                                           json_token["begin"],
+                                           json_token["end"],
+                                           upos=json_token["upos"]
+                                           ))
+                sentences[int(sentence_id)] = SentenceWithTokens(sentence, tokens)
 
             for entry in loaded["entries"]:
                 label = entry["label"]
                 target_lemma = entry["lemma"]
                 entry_pos = entry["upos"]
                 sentence_idx = int(entry["sentence_idx"])
-                sentence, tokens = sentences[sentence_idx]
+                sentence = sentences[sentence_idx].sentence
+                tokens = sentences[sentence_idx].tokens
                 if sentence in dataset._sentence_cache:
-                    assert dataset._sentence_cache[sentence] == sentence_idx  # Check for broken idx
+                    assert dataset._sentence_cache[sentence] == sentence_idx, sentence + " " + str(sentence_idx) + " " + str(dataset._sentence_cache[sentence])   # Check for broken idx
                 else:
                     dataset._sentence_cache[sentence] = sentence_idx
                 source = load_opt(entry, "source_id", default=None)
