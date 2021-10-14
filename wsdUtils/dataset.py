@@ -204,7 +204,7 @@ class WSDData:
                 sentence = sentences[sentence_idx].sentence
                 tokens = sentences[sentence_idx].tokens
                 if sentence in dataset._sentence_cache:
-                    assert dataset._sentence_cache[sentence] == sentence_idx, sentence + " " + str(sentence_idx) + " " + str(dataset._sentence_cache[sentence])   # Check for broken idx
+                    assert dataset._sentence_cache[sentence] == sentence_idx
                 else:
                     dataset._sentence_cache[sentence] = sentence_idx
                 source = load_opt(entry, "source_id", default=None)
@@ -268,10 +268,6 @@ class WSDData:
                             upos = pos_2_upos(pos)
                         begin = int(token["begin"])
                         end = int(token["end"])
-                        if correct_pivot_tokens and begin == pivot_start and end == pivot_end:
-                            # Correct lemmatization/pos tagging errors from tokenizer by setting them to entry data
-                            lemma = target_lemma
-                            upos = entry_pos
                         l_tokens.append(WSDToken(form, lemma, pos, begin, end, upos=upos))
                         
                 dataset.add_entry(
@@ -284,6 +280,18 @@ class WSDData:
                         pivot_start=pivot_start,
                         pivot_end=pivot_end
                         )
+
+            if correct_pivot_tokens:
+                # Correct lemmatization/pos tagging errors from tokenizer by setting them to entry data
+                for entry in dataset.entries:
+                    lemma = entry.lemma
+                    upos = entry.upos
+                    tokens = entry.tokens
+                    for token in tokens:
+                        if token.begin == entry.pivot_start and token.end == entry.pivot_end:
+                            token.lemma = lemma
+                            token.upos = upos
+
             return dataset
 
     @classmethod
@@ -338,11 +346,11 @@ class WSDData:
                     begin = char_position
                     end = char_position + len(form)
                     char_position += len(form) + 1
-
-                    if token_type == "instance" and (target_upos is None or upos in target_upos):
+                    if token_type == "instance":
                         instance_id = xml_token.attrib["id"]
-                        label = gold_labels[instance_id]
-                        pivots.append((instance_id, label, lemma, upos, begin, end))
+                        if (target_upos is None or upos in target_upos) and instance_id in gold_labels:
+                            label = gold_labels[instance_id]
+                            pivots.append((instance_id, label, lemma, upos, begin, end))
                     tokens.append(WSDToken(form, lemma, upos, begin, end, upos))
                 # Create new entry for each instance
                 sentence = " ".join([token.form for token in tokens])
@@ -376,19 +384,41 @@ class WSDData:
             self.add_entry(**entry.get_dict())
 
     @classmethod
-    def split(cls, dataset: 'WSDData', n_splits: int):
-        """ Splits this dataset into n smaller datasets"""
-        split_size = len(dataset.entries) // n_splits
+    def split_on_sentences(cls, dataset: 'WSDData', sentence_limit: int):
+        """ Splits the input dataset into smaller datasets with at most sentence_limit distinct sentences"""
         datasets = []
-        i = 3
-        new = cls(dataset.name, dataset.lang, dataset.labeltype)
-        for entry in dataset.entries[i*split_size:(i+1)*split_size]:
-            new.add_entry(entry.get_dict())
+        n_sentences = len(dataset._sentence_cache.keys())
+        entries_by_sentence = {}
+        for entry in dataset.entries:
+            if entry.sentence_idx in entries_by_sentence:
+                entries_by_sentence[entry.sentence_idx].append(entry)
+            else:
+                entries_by_sentence[entry.sentence_idx] = [entry]
 
-        
+        n_splits = n_sentences // sentence_limit + 1
+        split_size = n_sentences // n_splits
+
+        idxs = list(dataset._sentence_cache.keys())
+        for i in range(n_splits-1):
+            new = cls(dataset.name, dataset.lang, dataset.labeltype)
+            for idx in idxs[i*split_size:(i+1)*split_size]:
+                for entry in entries_by_sentence[idx]:
+                    new.add_entry(**entry.get_dict())
+            datasets.append(new)
+        last_split = cls(dataset.name, dataset.lang, dataset.labeltype)
+        for idx in idxs[(n_splits - 1) * split_size:]:
+            for entry in entries_by_sentence[idx]:
+                last_split.add_entry(**entry.get_dict())
+        datasets.append(last_split)
+
+        return datasets
+
+    def sentence_count(self):
+        return len(self._sentence_cache)
+
     def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip", in_place: bool = True):
         # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
-        #  though because of memory
+        #  though because of memory. May not actually be a concern. Don't need this feature anymore either though.
         if not in_place:
             raise NotImplementedError
         mapped_entries = []
