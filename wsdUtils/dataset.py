@@ -5,9 +5,10 @@ import argparse
 import os
 import random
 
-from typing import List
-from nltk.corpus import wordnet as wn
 from lxml import etree as et
+from typing import List, Dict, Union
+from nltk.corpus import wordnet as wn
+
 
 """
 Defines the data format for the pipeline scripts train/eval for wsd.
@@ -36,38 +37,42 @@ Optional fields for instances are:
 Instances can contain additional fields without interfering, but they will not be used/considered by these functions.
 Its important that the 'lemma' and 'pos' field for the whole instance matches those for the specific target token. 
 """
-# TODO: Should probably redo the entire format, replace with proper db or raganato or something, files are very large
-#  Should be able to keep interface
-# TODO: Especially should turn valid labeltypes into an enum or something of the sort, so we don't have to adjust a
+# TODO: Should turn valid labeltypes into an enum or something of the sort, so we don't have to adjust a
 #  dozen files if we change names
+# TODO: Loading and saving seems very slow
+# TODO: Raganato saving and loading, with pivot info, etc...
+# TODO: Get rid of sentences as string and construct them from tokens maybe?
 VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
 
 
 class WSDToken:
-    def __init__(self, form: str, lemma: str, pos: str, begin: int, end: int, upos: str = None, is_pivot: bool = False):
+    def __init__(self, form: str, lemma: str, pos: str, begin: int, end: int, upos: str = None):
         self.form = form
         self.lemma = lemma
         self.pos = pos
         self.upos = upos
         self.begin = begin
         self.end = end
-        self.is_pivot = is_pivot
 
     def __str__(self):
-        rep_items = [self.form, self.lemma, self.pos, self.upos, self.begin, self.end, self.is_pivot]
+        rep_items = [self.form, self.lemma, self.pos, self.upos, self.begin, self.end]
         return "\t".join(map(lambda x: str(x), rep_items))
-        
-        
+
+
+class SentenceWithTokens:
+    def __init__(self, sentence: str, tokens: List[WSDToken] = None):
+        self.sentence = sentence
+        self.tokens = tokens
+
+
 class WSDEntry:
     # TODO: Replace sentence with a function based on tokens, make tokens non-optional
-    def __init__(self, label: str, lemma: str, upos: str, tokens: List[WSDToken] = None,
-                 sentence: str = None, source_id: str = None, pivot_start: int = None, pivot_end: int = None):
-        if tokens is None:
-            tokens = []
+    def __init__(self, dataset: "WSDData", sentence_idx: int, label: str, lemma: str, upos: str,
+                 source_id: str = None, pivot_start: int = None, pivot_end: int = None):
+        self.dataset = dataset
         self.label = label
         self.lemma = lemma
-        self.tokens = tokens
-        self.sentence = sentence
+        self.sentence_idx = sentence_idx
         self.upos = upos
         self.source_id = source_id
         self.pivot_start = pivot_start
@@ -75,33 +80,144 @@ class WSDEntry:
 
     def __str__(self):
         rep_items = [self.label, self.lemma, self.pivot_start, self.pivot_end, self.source_id,
-                     "{} tokens".format(len(self.tokens))]
+                     "{} tokens".format(0 if self.tokens is None else len(self.tokens))]
         return "\t".join(map(lambda x: str(x), rep_items))
-        
+
+    # This is used by jsonpickle to determine what gets written out. @property functions are not in __dict__ and aren't
+    # written and attributes manually excluded from __dict__ here are not written either
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state["dataset"]  # Don't need this in the file to restore
+        return state
+
+    def get_dict(self):
+        return {"label": self.label,
+                "lemma": self.lemma,
+                "upos": self.upos,
+                "sentence": self.sentence,
+                "tokens": self.tokens,
+                "source_id": self.source_id,
+                "pivot_start": self.pivot_start,
+                "pivot_end": self.pivot_end}
+
+    @property
+    def sentence(self):
+        return self.dataset._sentences[self.sentence_idx].sentence
+
+    @sentence.setter
+    def sentence(self, new_sentence: str):
+        if new_sentence in self.dataset._sentence_cache:
+            # Iterate over sentences and check if new sentence is identical to any
+            self.sentence_idx = self.dataset._sentence_cache[new_sentence]
+        else:
+            self.sentence_idx = self.dataset._add_sentence(new_sentence, None)
+
+    @property
+    def tokens(self):
+        return self.dataset._sentences[self.sentence_idx].tokens
+
+    @tokens.setter
+    def tokens(self, new_tokens: List[WSDToken]):
+        # This sets or corrects tokens for the sentence
+        self.dataset._sentences[self.sentence_idx].tokens = new_tokens
+
+    def is_tokenized(self):
+        return self.dataset._sentences[self.sentence_idx].tokens is not None
+
         
 class WSDData:
-    def __init__(self, name: str, lang: str, labeltype: str, entries: List[WSDEntry] = None):
+    """ Cache works as such: OrderedDict of sentences and tokens"""
+    def __init__(self, name: str, lang: str, labeltype: str):
         assert labeltype in VALID_LABELTYPES
-        if entries is None:
-            entries = []
         self.name = name
-        self.entries = entries
         self.lang = lang
         self.labeltype = labeltype
+        self.entries: List[WSDEntry] = []
+        self._sentences: Dict[int, SentenceWithTokens] = {}
+        self._sentence_cache = {}
 
     def __str__(self):
         return "Dataset {}, language {}, labels {} with {} entries".format(self.name,
                                                                            self.lang, self.labeltype, len(self.entries))
 
-    @classmethod
-    def _load_opt(cls, entry, key: str, default=None):
-        if key in entry:
-            return entry[key]
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state["_sentence_cache"]  # Prevents this attribute from being printed to file
+        return state
+
+    def _add_sentence(self, sentence: str, tokens: List[WSDToken] = None, replace_tokens=False):
+        if sentence in self._sentence_cache:
+            idx = self._sentence_cache[sentence]
+            if replace_tokens:
+                self._sentences[idx].tokens = tokens
+            return idx
         else:
-            return default
-        
+            idx = 0
+            while idx in self._sentences:
+                idx += 1
+            self._sentences[idx] = SentenceWithTokens(sentence, tokens)
+            self._sentence_cache[sentence] = idx
+            return idx
+
+    def _clean_sentences(self):
+        """ Removes all sentences from the caches which are not being used by entries"""
+        used_idxs = [entry.sentence_idx for entry in self.entries]
+        for sentence, idx in self._sentence_cache.items():
+            if idx not in used_idxs:
+                del self._sentence_cache[sentence]
+                del self._sentences[idx]
+
+    def add_entry(self, label: str, lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
+                  source_id: str = None, pivot_start: int = None, pivot_end: int = None):
+        idx = self._add_sentence(sentence, tokens)
+        self.entries.append(WSDEntry(self, idx, label, lemma, upos,
+                                     source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end))
+
     @classmethod
-    def load(cls, json_path: str, correct_pivot_tokens: bool = True):
+    def load(cls, json_path: str):
+        with open(json_path, "r", encoding="utf8") as f:
+            loaded = json.load(f)
+            lang = loaded["lang"]
+            name = loaded["name"]
+            labeltype = loaded["labeltype"]
+            assert labeltype in VALID_LABELTYPES
+            dataset = cls(name, lang, labeltype)
+            sentences = {}
+            for key, value in loaded["_sentences"].items():
+                sentences[int(key)] = value
+
+            for entry in loaded["entries"]:
+                label = entry["label"]
+                target_lemma = entry["lemma"]
+                entry_pos = entry["upos"]
+                sentence_idx = int(entry["sentence_idx"])
+                sentence, tokens = sentences[sentence_idx]
+                if sentence in dataset._sentence_cache:
+                    assert dataset._sentence_cache[sentence] == sentence_idx  # Check for broken idx
+                else:
+                    dataset._sentence_cache[sentence] = sentence_idx
+                source = load_opt(entry, "source_id", default=None)
+                pivot_start = load_opt(entry, "pivot_start", default=None)
+                if pivot_start is not None:
+                    pivot_start = int(pivot_start)
+                pivot_end = load_opt(entry, "pivot_end", default=None)
+                if pivot_end is not None:
+                    pivot_end = int(pivot_end)
+
+                dataset.add_entry(
+                    label,
+                    target_lemma,
+                    entry_pos,
+                    sentence,
+                    tokens=tokens,
+                    source_id=source,
+                    pivot_start=pivot_start,
+                    pivot_end=pivot_end
+                )
+        return dataset
+
+    @classmethod
+    def load_legacy(cls, json_path: str, correct_pivot_tokens: bool = True):
         """ correct_pivot_tokens replaces upos and lemma data for tokens with is_pivot==True with the entry upos and
         lemma fields. This can help correct issues where the token information is incorrect due to automatic taggers.
         We are assumming that entry information is correct here due to manual annotation"""
@@ -111,18 +227,18 @@ class WSDData:
             name = loaded["name"]
             labeltype = loaded["labeltype"]
             assert labeltype in VALID_LABELTYPES
-            entries = []
+            dataset = cls(name, lang, labeltype)
             for entry in loaded["entries"]:
                 label = entry["label"]
                 target_lemma = entry["lemma"]
                 entry_pos = entry["upos"]
                 
-                sentence = cls._load_opt(entry, "sentence", default=None)
-                source = cls._load_opt(entry, "source_id", default=None)
-                pivot_start = cls._load_opt(entry, "pivot_start", default=None)
+                sentence = entry["sentence"]
+                source = load_opt(entry, "source_id", default=None)
+                pivot_start = load_opt(entry, "pivot_start", default=None)
                 if pivot_start is not None:
                     pivot_start = int(pivot_start)
-                pivot_end = cls._load_opt(entry, "pivot_end", default=None)
+                pivot_end = load_opt(entry, "pivot_end", default=None)
                 if pivot_end is not None:
                     pivot_end = int(pivot_end)
 
@@ -140,33 +256,36 @@ class WSDData:
                             upos = pos_2_upos(pos)
                         begin = int(token["begin"])
                         end = int(token["end"])
-                        is_pivot = bool(token["is_pivot"])
-                        if is_pivot and correct_pivot_tokens:
+                        if correct_pivot_tokens and begin == pivot_start and end == pivot_end:
                             # Correct lemmatization/pos tagging errors from tokenizer by setting them to entry data
                             lemma = target_lemma
                             upos = entry_pos
-                        l_tokens.append(WSDToken(form, lemma, pos, begin, end, upos=upos, is_pivot=is_pivot))
+                        l_tokens.append(WSDToken(form, lemma, pos, begin, end, upos=upos))
                         
-                entries.append(
-                    WSDEntry(
+                dataset.add_entry(
                         label, 
                         target_lemma, 
-                        entry_pos, 
-                        tokens=l_tokens, 
-                        sentence=sentence, 
+                        entry_pos,
+                        sentence,
+                        tokens=l_tokens,
                         source_id=source,
                         pivot_start=pivot_start,
                         pivot_end=pivot_end
-                        ))
-            return cls(name, lang, labeltype, entries)
+                        )
+            return dataset
 
     @classmethod
-    def load_raganato(cls, xml_path: str, target_upos: str = None, lang: str = "en",
+    def load_raganato(cls, xml_path: str, target_upos: Union[str, List[str]] = None, lang: str = "en",
                       input_keys: str = "sensekeys", name: str = None):
         assert xml_path.endswith(".data.xml"), "Must provide path to raganato xml"
         label_path = xml_path.replace('.data.xml', '.gold.key.txt')
         if name is None:
             name = os.path.basename(xml_path).replace(".data.xml", "")
+
+        if isinstance(target_upos, str):  # Wrap single input with list for later check
+            target_upos = [target_upos]
+
+        dataset = WSDData(name=name, lang=lang, labeltype="wnoffsets")
         # Load in gold labels
         gold_labels = {}
         with open(label_path, "rt", encoding="utf8") as f:
@@ -186,14 +305,12 @@ class WSDData:
         parser = et.XMLParser()
         xml_corpus = et.parse(xml_path, parser).getroot()
         # Go through each sentence
-        entries = []
         for xml_text in xml_corpus.getchildren():
             for xml_sentence in xml_text.getchildren():
                 # Create token list and find disambiguation instances
                 tokens = []
                 pivots = []
                 char_position = 0
-                token_idx = 0
                 for xml_token in xml_sentence.getchildren():
                     token_type = xml_token.tag
 
@@ -206,50 +323,41 @@ class WSDData:
                     end = char_position + len(form)
                     char_position += len(form) + 1
 
-                    if token_type == "instance" and (target_upos is None or upos == target_upos):
+                    if token_type == "instance" and (target_upos is None or upos in target_upos):
                         instance_id = xml_token.attrib["id"]
-                        pivots.append((token_idx, instance_id, lemma))
-                    tokens.append(WSDToken(form, lemma, upos, begin, end, upos, is_pivot=False))
-                    token_idx += 1
+                        label = gold_labels[instance_id]
+                        pivots.append((instance_id, label, lemma, upos, begin, end))
+                    tokens.append(WSDToken(form, lemma, upos, begin, end, upos))
                 # Create new entry for each instance
+                sentence = " ".join([token.form for token in tokens])
                 for pivot in pivots:
-                    pivot_idx, instance_id, lemma = pivot
-                    label = gold_labels[instance_id]
-                    pivot_token = tokens[pivot_idx]
-                    pivot_token_corrected = WSDToken(pivot_token.form,
-                                                     pivot_token.lemma,
-                                                     pivot_token.pos,
-                                                     pivot_token.begin,
-                                                     pivot_token.end,
-                                                     pivot_token.upos,
-                                                     is_pivot=True)
-                    entry_tokens = tokens[:]  # Copy token list
-                    entry_tokens[pivot_idx] = pivot_token_corrected
-                    sentence = " ".join([token.form for token in entry_tokens])
-                    entry = WSDEntry(label,
-                                     lemma,
-                                     target_upos,
-                                     tokens=entry_tokens,
-                                     sentence=sentence,
-                                     source_id=instance_id,
-                                     pivot_start=pivot_token.begin,
-                                     pivot_end=pivot_token.end)
-                    entries.append(entry)
-
-        return cls(name=name, lang=lang, labeltype="wnoffsets", entries=entries)
+                    instance_id, label, lemma, upos, pivot_start, pivot_end = pivot
+                    dataset.add_entry(label,
+                                      lemma,
+                                      upos,
+                                      sentence,
+                                      tokens=tokens,
+                                      source_id=instance_id,
+                                      pivot_start=pivot_start,
+                                      pivot_end=pivot_end)
+        return dataset
 
     def save(self, outpath: str):
-        # TODO: Speed this up, seems slow
-        out = jsonpickle.encode(self, unpicklable=False, indent=2)
-        with open(outpath, "w+", encoding="utf8") as f:
+        out = jsonpickle.encode(self, unpicklable=False, indent=1)
+        with open(outpath, "w+", encoding="utf8", newline="\n") as f:
             f.write(out)
+
+    #def save_raganato(self, outpath: str):
+    #    assert outpath.endswith(".data.xml")
+    #    for
             
-    def add(self, other):
+    def add(self, other: 'WSDData'):
         """ Merges the other dataset into this one. This can only be done if both have the same language"""
         assert self.lang == other.lang, "Can only merge two datasets of the same language!"
         assert self.labeltype == other.labeltype, "Can only merge to datasets with the same labeltype!"
         self.name = self.name + "+" + other.name
-        self.entries.extend(other.entries)
+        for entry in other.entries:
+            self.add_entry(**entry.get_dict())
         
     def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip", in_place: bool = True):
         # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
@@ -267,11 +375,8 @@ class WSDData:
                     continue
                 elif no_map == "raise":
                     raise RuntimeWarning("No mapping for entries with label {}".format(entry.label))
-        if not in_place:
-            return WSDData(self.name, lang=self.lang, labeltype=new_labeltype, entries=mapped_entries)
-        else:
-            self.entries = mapped_entries
-            self.labeltype = new_labeltype
+        self.entries = mapped_entries
+        self.labeltype = new_labeltype
 
     def filter(self, ambiguous: bool = False, label_count_limit: int = None, in_place: bool = True):
         filtered = self.entries
@@ -302,11 +407,8 @@ class WSDData:
                     lemma_sense_map[key] = {entry.label}
             tmp = [entry for entry in filtered if len(lemma_sense_map[entry.lemma + "#" + entry.upos]) > 1]
             filtered = tmp
-
-        if not in_place:
-            return WSDData(self.name, lang=self.lang, labeltype=self.labeltype, entries=filtered)
-        else:
-            self.entries = filtered
+        self.entries = filtered
+        self._clean_sentences()
 
     def get_statistics(self):
         lemma_sense_map = {}
@@ -360,6 +462,13 @@ class WSDData:
         return most_frequent_senses
 
 
+def load_opt(entry, key: str, default=None):
+    if key in entry:
+        return entry[key]
+    else:
+        return default
+
+
 def load_mapping(map_path: str, first_only=True):
     map_dict = {}
     with open(map_path, "rt", encoding="utf8") as f:
@@ -389,9 +498,9 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=T
         else:
             entries_by_label[label] = [entry]
 
-    trainset = WSDData(dataset.name + "_train", dataset.lang, dataset.labeltype, entries=[])
-    evalset = WSDData(dataset.name + "_eval", dataset.lang, dataset.labeltype, entries=[])
-    testset = WSDData(dataset.name + "_test", dataset.lang, dataset.labeltype, entries=[])
+    trainset = WSDData(dataset.name + "_train", dataset.lang, dataset.labeltype)
+    evalset = WSDData(dataset.name + "_eval", dataset.lang, dataset.labeltype)
+    testset = WSDData(dataset.name + "_test", dataset.lang, dataset.labeltype)
 
     for label, entries in entries_by_label.items():
         # Dump labels with single instance
@@ -413,9 +522,13 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=T
 
         if shuffle:
             random.shuffle(entries)
-        evalset.entries.extend(entries[:eval_size])
-        testset.entries.extend(entries[eval_size:eval_size+test_size])
-        trainset.entries.extend(entries[eval_size+test_size:])
+
+        for entry in entries[:eval_size]:
+            evalset.add_entry(**entry.get_dict())
+        for entry in entries[eval_size:eval_size+test_size]:
+            testset.add_entry(**entry.get_dict())
+        for entry in entries[eval_size+test_size:]:
+            trainset.add_entry(**entry.get_dict())
 
     if shuffle:
         random.shuffle(trainset.entries)
