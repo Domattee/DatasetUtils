@@ -326,7 +326,7 @@ class WSDData:
         xml_corpus = et.parse(xml_path, parser).getroot()
         # Go through each sentence
         for i, xml_text in enumerate(xml_corpus.getchildren()):
-            if "source" in xml_text.attrib["source"]:
+            if "source" in xml_text.attrib:
                 source = xml_text.attrib["source"]
             else:
                 source = name + "_" + str(i)
