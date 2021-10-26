@@ -498,7 +498,15 @@ class WSDData:
             if count in word_sense_dist:
                 word_sense_dist[count] += lemma_dist[key]
             else:
-                word_sense_dist = lemma_dist[key]
+                word_sense_dist[count] = lemma_dist[key]
+
+        lemma_min = math.inf
+        lemma_max = - math.inf
+        for key in lemma_dist:
+            if lemma_dist[key] < lemma_min:
+                lemma_min = lemma_dist[key]
+            if lemma_dist[key] > lemma_max:
+                lemma_max = lemma_dist[key]
 
         average_word_polysemy = 0
         for key in lemma_dist:
@@ -517,13 +525,15 @@ class WSDData:
         statistics_dict["Average lemma polysemy"] = average_lemma_polysemy
         statistics_dict["Word Polysemy distribution"] = word_sense_dist
         statistics_dict["Average word polysemy"] = average_word_polysemy
+        statistics_dict["Lemma distribution"] = lemma_dist
 
         if pprint:
             print("Instances: {}".format(len(self.entries)))
             print("Distinct senses: {}".format(len(labels)))
             print("Distinct lemmas: {}".format(len(lemma_sense_map)))
-            print("Average lemma polysemy: {}".format(average_lemma_polysemy))
-            print("Average word polysemy: {}".format(average_word_polysemy))
+            print("Average lemma polysemy: {:.2f}".format(average_lemma_polysemy))
+            print("Average word polysemy: {:.2f}".format(average_word_polysemy))
+            print("Lemma frequency range: {} - {}".format(lemma_min, lemma_max))
             print("Distribution of lemmas with x senses:")
             for i in sorted(lemma_sense_dist):
                 print("{} lemmas with {} senses".format(lemma_sense_dist[i], i))
