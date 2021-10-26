@@ -469,10 +469,13 @@ class WSDData:
         self.entries = filtered
         self._clean_sentences()
 
-    def get_statistics(self):
+    def get_statistics(self, pprint=True):
         lemma_sense_map = {}
-        sense_dist = {}
+        lemma_sense_dist = {}
+        lemma_dist = {}
+        word_sense_dist = {}
         labels = set()
+        statistics_dict = {}
 
         for entry in self.entries:
             key = entry.lemma + "#" + entry.upos
@@ -481,19 +484,53 @@ class WSDData:
                 lemma_sense_map[key].add(entry.label)
             else:
                 lemma_sense_map[key] = {entry.label}
+            if key in lemma_dist:
+                lemma_dist[key] += 1
+            else:
+                lemma_dist[key] = 1
 
         for key in lemma_sense_map:
             count = len(lemma_sense_map[key])
-            if count in sense_dist:
-                sense_dist[count] += 1
+            if count in lemma_sense_dist:
+                lemma_sense_dist[count] += 1
             else:
-                sense_dist[count] = 1
-        print("Instances: {}".format(len(self.entries)))
-        print("Distinct senses: {}".format(len(labels)))
-        print("Distinct lemmas: {}".format(len(lemma_sense_map)))
-        print("Distribution of lemmas with x senses:")
-        for i in sorted(sense_dist):
-            print("{} lemmas with {} senses".format(sense_dist[i], i))
+                lemma_sense_dist[count] = 1
+            if count in word_sense_dist:
+                word_sense_dist[count] += lemma_dist[key]
+            else:
+                word_sense_dist = lemma_dist[key]
+
+        average_word_polysemy = 0
+        for key in lemma_dist:
+            average_word_polysemy += lemma_dist[key] * len(lemma_sense_map[key])
+        average_word_polysemy = average_word_polysemy / len(self.entries)
+
+        average_lemma_polysemy = 0
+        for i in lemma_sense_dist:
+            average_lemma_polysemy += i * lemma_sense_dist[i]
+        average_lemma_polysemy = average_lemma_polysemy / len(lemma_sense_map)
+
+        statistics_dict["Number of Instances"] = len(self.entries)
+        statistics_dict["Distinct senses"] = len(labels)
+        statistics_dict["Distinct lemmas"] = len(lemma_sense_map)
+        statistics_dict["Lemma polysemy distribution"] = lemma_sense_dist
+        statistics_dict["Average lemma polysemy"] = average_lemma_polysemy
+        statistics_dict["Word Polysemy distribution"] = word_sense_dist
+        statistics_dict["Average word polysemy"] = average_word_polysemy
+
+        if pprint:
+            print("Instances: {}".format(len(self.entries)))
+            print("Distinct senses: {}".format(len(labels)))
+            print("Distinct lemmas: {}".format(len(lemma_sense_map)))
+            print("Average lemma polysemy: {}".format(average_lemma_polysemy))
+            print("Average word polysemy: {}".format(average_word_polysemy))
+            print("Distribution of lemmas with x senses:")
+            for i in sorted(lemma_sense_dist):
+                print("{} lemmas with {} senses".format(lemma_sense_dist[i], i))
+            for i in sorted(word_sense_dist):
+                print("{} words with {} senses".format(word_sense_dist[i], i))
+
+        return statistics_dict
 
     def mfs(self):
         per_lemma_sense_counts = {}
