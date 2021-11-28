@@ -58,6 +58,10 @@ class WSDToken:
         rep_items = [self.form, self.lemma, self.pos, self.upos, self.begin, self.end]
         return "\t".join(map(lambda x: str(x), rep_items))
 
+    def is_pivot(self, entry):
+        """Check if this token is the pivot token of entry"""
+        return self in entry.tokens and entry.pivot_start == self.begin and entry.pivot_end == self.end
+
 
 class SentenceWithTokens:
     def __init__(self, sentence: str, tokens: List[WSDToken] = None):
@@ -288,7 +292,7 @@ class WSDData:
                     upos = entry.upos
                     tokens = entry.tokens
                     for token in tokens:
-                        if token.begin == entry.pivot_start and token.end == entry.pivot_end:
+                        if token.is_pivot(entry):
                             token.lemma = lemma
                             token.upos = upos
 
@@ -385,6 +389,16 @@ class WSDData:
         for entry in other.entries:
             self.add_entry(**entry.get_dict())
 
+    def intersection(self, other: 'WSDData'):
+        """ Removes all entries from this dataset with source-ids not occuring in the other dataset """
+        ids_other = set([entry.source_id for entry in other.entries])
+        matching_entries = []
+        for entry in self.entries:
+            if entry.source_id in ids_other:
+                matching_entries.append(entry)
+        self.entries = matching_entries
+        self._clean_sentences()
+
     @classmethod
     def split_on_sentences(cls, dataset: 'WSDData', sentence_limit: int):
         """ Splits the input dataset into smaller datasets with at most sentence_limit distinct sentences"""
@@ -434,6 +448,11 @@ class WSDData:
                     continue
                 elif no_map == "raise":
                     raise RuntimeWarning("No mapping for entries with label {}".format(entry.label))
+                elif no_map == "warn":
+                    print("No mapping for entries with label {}".format(entry.label))
+                    continue
+                else:
+                    raise NotImplementedError
         self.entries = mapped_entries
         self.labeltype = new_labeltype
 
@@ -589,7 +608,7 @@ def load_mapping(map_path: str, first_only=True):
     return map_dict         
 
 
-def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=True):
+def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=True, lemma_key=False):
     # Split dataset into train/eval/test datasets with stratification using the gold labels
     assert ratio_eval + ratio_test <= 1.0
     assert ratio_eval >= 0.0
@@ -598,17 +617,20 @@ def train_test_split(dataset: WSDData, ratio_eval=0.2, ratio_test=0.2, shuffle=T
     entries_by_label = {}
 
     for entry in dataset.entries:
-        label = entry.label
-        if label in entries_by_label:
-            entries_by_label[label].append(entry)
+        if lemma_key:
+            key = (entry.lemma, entry.label)
         else:
-            entries_by_label[label] = [entry]
+            key = entry.label
+        if key in entries_by_label:
+            entries_by_label[key].append(entry)
+        else:
+            entries_by_label[key] = [entry]
 
     trainset = WSDData(dataset.name + "_train", dataset.lang, dataset.labeltype)
     evalset = WSDData(dataset.name + "_eval", dataset.lang, dataset.labeltype)
     testset = WSDData(dataset.name + "_test", dataset.lang, dataset.labeltype)
 
-    for label, entries in entries_by_label.items():
+    for key, entries in entries_by_label.items():
         # Dump labels with single instance
         if len(entries) <= 1:
             continue
