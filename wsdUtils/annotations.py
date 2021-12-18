@@ -14,6 +14,7 @@
 #             merge we should merge to that one.
 #           If senses do not get merged -> Pick a "correct" one for gold label, or skip if can't decide
 #       Sentences with single label or two identical labels -> Gold label is that label.
+# TODO: Make lemma id file for all germanet verbs
 
 from wsdUtils.dataset import WSDData, WSDEntry, WSDToken
 
@@ -157,21 +158,33 @@ class AnnotData(WSDData):
         """ Randolphs Kappa for whole set"""
 
         annotations = []
-        labels = set()
+        total_labels = set()
+        lemmapos_labels = load_lemma_labels()
         for entry in self.entries:
             if entry.raw_labels is None:
                 continue
 
+            lemmapos = entry.lemma + "#" + entry.upos
+            if lemmapos not in lemmapos_labels:
+                raise RuntimeError("Could not find lemmapos {} in mapping!".format(lemmapos))
+            else:
+                for label in lemmapos_labels[lemmapos]:
+                    if label in self.merge_map:
+                        total_labels.add(self.merge_map[label])
+                    else:
+                        total_labels.add(label)
             label_counts = {}
             for label in entry.raw_labels:
-                labels.add(label)
                 if label in label_counts:
                     label_counts[label] += 1
                 else:
                     label_counts[label] = 1
             counts = [value for key, value in label_counts.items()]
             annotations.append(counts)
-        score = _randolphs_kappa(annotations, len(labels))
+        score = _randolphs_kappa(annotations, len(total_labels))
+        # TODO: Check that this makes any sense at all? Seems as though we should calculate kappa for each instance or
+        #  each lemma and then average them or something. p_e is effectively 0 due to very large number of total labels
+        #  currently.
         return score
 
     def iaa_lemma(self, lemma: str):
@@ -197,3 +210,15 @@ def _randolphs_kappa(annotations, n_labels):
     p_o = nom / denom
     kappa = (p_o - p_e) / (1 - p_e)
     return kappa
+
+
+def load_lemma_labels():
+    filepath = ""
+    lemmapos_labels = {}
+    with open(filepath, "rt", encoding="utf8") as f:
+        for line in f:
+            line = line.strip().split("\t")
+            lemmapos = line[0]
+            labels = line[1:]
+            lemmapos_labels[lemmapos] = labels
+    return lemmapos_labels
