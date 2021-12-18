@@ -166,7 +166,7 @@ class WSDData:
     def _clean_sentences(self):
         """ Removes all sentences from the caches which are not being used by entries"""
         used_idxs = [entry.sentence_idx for entry in self.entries]
-        for sentence, idx in self._sentence_cache.items():
+        for sentence, idx in list(self._sentence_cache.items()):
             if idx not in used_idxs:
                 del self._sentence_cache[sentence]
                 del self._sentences[idx]
@@ -487,6 +487,15 @@ class WSDData:
             filtered = tmp
         self.entries = filtered
         self._clean_sentences()
+
+    def get_lemmas(self):
+        lemma_frequencies = {}
+        for entry in self.entries:
+            if entry.lemma in lemma_frequencies:
+                lemma_frequencies[entry.lemma] += 1
+            else:
+                lemma_frequencies[entry.lemma] = 1
+        return lemma_frequencies
 
     def get_statistics(self, pprint=True):
         lemma_sense_map = {}

@@ -25,12 +25,13 @@ def pretty_print_results(results):
     rows.append(["Micro", *results["Micro"]])
     rows.append(["Macro", *results["Macro"]])
     rows.append(["Weighted", *results["Weighted"]])
-    print("\n=================================================================")
-    print("\n{:<9}\t{:>9}\t{:>9}\t{:>9}\t{:>9}".format(*rows[0]))
+    outstring = "=================================================================\n"
+    outstring += "{:<9}\t{:>9}\t{:>9}\t{:>9}\t{:>9}\n".format(*rows[0])
     for row in rows[1:]:
-        print("{:>9}\t{:>9.4f}\t{:>9.4f}\t{:>9.4f}\t{:>9}".format(*row))
-    print("=================================================================\n")
-    return rows[1][3], rows[2][3], rows[3][3]
+        outstring += "{:>9}\t{:>9.4f}\t{:>9.4f}\t{:>9.4f}\t{:>9}\n".format(*row)
+    outstring += "=================================================================\n"
+    print(outstring + "\n")
+    return outstring
 
 
 def export_latex(results):
