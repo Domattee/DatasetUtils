@@ -29,7 +29,8 @@ class AnnotEntry(WSDEntry):
                  pivot_start: int = None, pivot_end: int = None):
         super().__init__(dataset, sentence_idx, label, lemma, upos,
                          source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end)
-
+        if raw_labels is not None or annotators is not None:
+            assert len(raw_labels) == len(annotators)
         self.raw_labels = raw_labels
         self.annotators = annotators
 
@@ -59,6 +60,10 @@ class AnnotData(WSDData):
             if entry.label is None and entry.can_be_labeled:
                 out.append(entry)
         return out
+
+    def anonymize(self):
+        """ Replaces all annotators with numbers and generates a dictionary containing the replacement mapping """
+        pass
 
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
@@ -137,8 +142,58 @@ class AnnotData(WSDData):
     # =========== I/O ==============================================================================================
     # ==============================================================================================================
 
-    def _load_db_dump(self, filepath):
+    def _load_db_dump(self, filepath, anonymize=True):
+        """ Load mongo dump. If anonymize is true we replace actual annotator names with numbers and write out a file
+        with the labeling """
         pass
 
     def load(self, outpath):
         pass
+
+    # =========== Measures =========================================================================================
+    # ==============================================================================================================
+
+    def iaa(self):
+        """ Randolphs Kappa for whole set"""
+
+        annotations = []
+        labels = set()
+        for entry in self.entries:
+            if entry.raw_labels is None:
+                continue
+
+            label_counts = {}
+            for label in entry.raw_labels:
+                labels.add(label)
+                if label in label_counts:
+                    label_counts[label] += 1
+                else:
+                    label_counts[label] = 1
+            counts = [value for key, value in label_counts.items()]
+            annotations.append(counts)
+        score = _randolphs_kappa(annotations, len(labels))
+        return score
+
+    def iaa_lemma(self, lemma: str):
+        """ Randolphs Kappa for specific lemma"""
+        pass
+
+
+def _randolphs_kappa(annotations, n_labels):
+    """ Computes randolphs kappa for a given annotation matrix. Annotation matrix stores the number of annotations per
+    category for each instance. Categories do not have to be consistent between instances.
+    Assumes a rater can only rate each item once
+    Pythonized version of the DKPro implementation"""
+    p_e = 1.0 / n_labels
+
+    nom = 0.0
+    denom = 0.0
+    for instance in annotations:
+        rater_count = sum(instance)
+        if rater_count < 2:
+            continue
+        nom += sum(count * (count + 1) for count in instance) / (rater_count - 1)
+        denom += rater_count
+    p_o = nom / denom
+    kappa = (p_o - p_e) / (1 - p_e)
+    return kappa
