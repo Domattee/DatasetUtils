@@ -376,10 +376,6 @@ class WSDData:
         out = jsonpickle.encode(self, unpicklable=False, indent=1)
         with open(outpath, "w+", encoding="utf8", newline="\n") as f:
             f.write(out)
-
-    #def save_raganato(self, outpath: str):
-    #    assert outpath.endswith(".data.xml")
-    #    for
             
     def add(self, other: 'WSDData'):
         """ Merges the other dataset into this one. This can only be done if both have the same language"""

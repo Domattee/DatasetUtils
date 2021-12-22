@@ -67,7 +67,23 @@ class AnnotData(WSDData):
 
     def anonymize(self):
         """ Replaces all annotators with numbers and generates a dictionary containing the replacement mapping """
-        pass
+        annotator_labels = {}
+        annotator_count = 1
+        for entry in self.entries:
+            annotators = entry.annotators
+            anonymized = []
+            for annotator in annotators:
+                if annotator in annotator_labels:
+                    anonymized.append(annotator_labels[annotator])
+                else:
+                    annotator_label = "A_{}".format(annotator_count)
+                    anonymized.append(annotator_label)
+                    annotator_labels[annotator] = annotator_label
+                    annotator_count += 1
+            entry.annotators = anonymized
+        with open("annotator_names.txt", "wt", encoding="utf8", newline="") as f:
+            for annotator_name in annotator_labels:
+                f.write(annotator_name + "\t" + annotator_labels[annotator_name] + "\n")
 
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
@@ -163,8 +179,6 @@ class AnnotData(WSDData):
     def _load_db_dump(cls, filepath, name, labeltype, lang, upos, anonymize=True):
         """ Load mongo dump. If anonymize is true we replace actual annotator names with numbers and write out a file
         with the labeling """
-        annotator_labels = {}
-        anno_count = 1
         with open(filepath, "r", encoding="utf8") as f:
             dataset = cls(name=name, labeltype=labeltype, lang=lang)
             loaded = json.load(f)
@@ -179,24 +193,14 @@ class AnnotData(WSDData):
                 annotators = []
                 for annotation in entry["annotations"]:
                     annotations.append(annotation["annotation"])
-                    annotator = annotation["annotator"]
-                    if anonymize:
-                        if annotator in annotator_labels:
-                            annotator = annotator_labels[annotator]
-                        else:
-                            annotator = "A_{}".format(anno_count)
-                            annotator_labels[annotator] = annotator
-                            anno_count += 1
-                    annotators.append(annotator)
+                    annotators.append(annotation["annotator"])
 
                 dataset.add_entry(label=None, lemma=entry_lemma, upos=upos, sentence=sentence, raw_labels=annotations,
                                   annotators=annotators, source_id=source_id, pivot_start=pivot_start,
                                   pivot_end=pivot_end)
 
-        if anonymize:
-            with open("annotator_names.txt", "wt", encoding="utf8", newline="") as f:
-                for annotator_name in annotator_labels:
-                    f.write(annotator_name + "\t" + annotator_labels[annotator_name] + "\n")
+            if anonymize:
+                dataset.anonymize()
 
     @classmethod
     def _load_verb_db_dump(cls, filepath, anonymize=True):
