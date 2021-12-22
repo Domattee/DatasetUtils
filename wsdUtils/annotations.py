@@ -18,7 +18,8 @@
 
 from wsdUtils.dataset import WSDData, WSDEntry, WSDToken
 
-from typing import List
+from typing import List, Union
+import json
 
 
 class AnnotEntry(WSDEntry):
@@ -48,8 +49,10 @@ class AnnotData(WSDData):
         self.merge_map = {}
         self.merge_targets = set()
         self.merge_reasons = {}
+        self.lemma_ids = {}
+        self.load_lemma_labels("")
 
-    def add_entry(self, label: str, lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
+    def add_entry(self, label: Union[str, None], lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
                   raw_labels=[], annotators=[], source_id: str = None, pivot_start: int = None, pivot_end: int = None):
         idx = self._add_sentence(sentence, tokens)
         self.entries.append(AnnotEntry(self, idx, label, lemma, upos, raw_labels=raw_labels, annotators=annotators,
@@ -69,7 +72,7 @@ class AnnotData(WSDData):
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
 
-    def merge_labels(self, label1, label2):
+    def _merge_labels(self, label1, label2):
         # Handles the bureaucracy of selecting two labels for merging
         # If both label1 and label2 were already used as merge targets:
         #   Chose label1 as target
@@ -111,11 +114,21 @@ class AnnotData(WSDData):
                 outline = key + "\t" + "\t".join(inverted_map[key]) + "\n"
                 f.write(outline)
 
+    def load_merge_map(self, infile):
+        with open(infile, "rt", encoding="utf8") as f:
+            for line in f:
+                line = line.strip().split("\t")
+                target = line[0]
+                mapped = line[1:]
+                for tmp in mapped:
+                    self.merge_map[tmp] = target
+
     # =========== Processing entries without gold ==================================================================
     # ==============================================================================================================
 
     def process_easy_entries(self):
         # Easy entries are those where all manual annotations are identical, excluding special labels
+        counter = 0
         for entry in self.unprocessed_entries():
             labels = set()
             for label in entry.raw_labels:
@@ -124,8 +137,10 @@ class AnnotData(WSDData):
                 else:
                     labels.add(label)
             if len(labels) == 1:
+                counter += 1
                 label = list(labels)[0]
                 entry.label = label
+        print("Filled in {} labels".format(counter))
 
     def process_hard_entries(self):
         # While there are unprocessed entries with differing annotations:
@@ -138,58 +153,120 @@ class AnnotData(WSDData):
         # Continue
 
         # Final step: Go over all entries and map them according to merge map to ensure consistency
+        #       Write out merge information in file
         pass
 
     # =========== I/O ==============================================================================================
     # ==============================================================================================================
 
-    def _load_db_dump(self, filepath, anonymize=True):
+    @classmethod
+    def _load_db_dump(cls, filepath, name, labeltype, lang, upos, anonymize=True):
         """ Load mongo dump. If anonymize is true we replace actual annotator names with numbers and write out a file
         with the labeling """
-        pass
+        annotator_labels = {}
+        anno_count = 1
+        with open(filepath, "r", encoding="utf8") as f:
+            dataset = cls(name=name, labeltype=labeltype, lang=lang)
+            loaded = json.load(f)
+            for entry in loaded:
+                source_id = entry["sentence_id"]
+                sentence = entry["sentence"]
+                entry_lemma = entry["verb_clean"]
+                pivot_start = int(entry["pivot_start"])
+                pivot_end = int(entry["pivot_end"])
+
+                annotations = []
+                annotators = []
+                for annotation in entry["annotations"]:
+                    annotations.append(annotation["annotation"])
+                    annotator = annotation["annotator"]
+                    if anonymize:
+                        if annotator in annotator_labels:
+                            annotator = annotator_labels[annotator]
+                        else:
+                            annotator = "A_{}".format(anno_count)
+                            annotator_labels[annotator] = annotator
+                            anno_count += 1
+                    annotators.append(annotator)
+
+                dataset.add_entry(label=None, lemma=entry_lemma, upos=upos, sentence=sentence, raw_labels=annotations,
+                                  annotators=annotators, source_id=source_id, pivot_start=pivot_start,
+                                  pivot_end=pivot_end)
+
+        if anonymize:
+            with open("annotator_names.txt", "wt", encoding="utf8", newline="") as f:
+                for annotator_name in annotator_labels:
+                    f.write(annotator_name + "\t" + annotator_labels[annotator_name] + "\n")
+
+    @classmethod
+    def _load_verb_db_dump(cls, filepath, anonymize=True):
+        return cls._load_db_dump(filepath, "ttvc_2", "gn", "de", "VERB", anonymize=anonymize)
 
     def load(self, outpath):
         pass
 
-    # =========== Measures =========================================================================================
+    def load_lemma_labels(self, inpath):
+        with open(inpath, "rt", encoding="utf8") as f:
+            for line in f:
+                line = line.strip().split("\t")
+                lemmapos = line[0]
+                labels = line[1:]
+                self.lemma_ids[lemmapos] = labels
+
+    # =========== Metrics and Related ==============================================================================
     # ==============================================================================================================
 
-    def iaa(self):
+    def iaa(self, with_merging=True):
         """ Randolphs Kappa for whole set"""
 
         annotations = []
         total_labels = set()
-        lemmapos_labels = load_lemma_labels()
         for entry in self.entries:
             if entry.raw_labels is None:
                 continue
-
-            lemmapos = entry.lemma + "#" + entry.upos
-            if lemmapos not in lemmapos_labels:
-                raise RuntimeError("Could not find lemmapos {} in mapping!".format(lemmapos))
-            else:
-                for label in lemmapos_labels[lemmapos]:
-                    if label in self.merge_map:
-                        total_labels.add(self.merge_map[label])
-                    else:
-                        total_labels.add(label)
-            label_counts = {}
-            for label in entry.raw_labels:
-                if label in label_counts:
-                    label_counts[label] += 1
-                else:
-                    label_counts[label] = 1
-            counts = [value for key, value in label_counts.items()]
-            annotations.append(counts)
+            total_labels.update(self._count_possible_labels(entry, with_merging=with_merging))
+            annotations.append(self._count_labels(entry, with_merging=with_merging))
         score = _randolphs_kappa(annotations, len(total_labels))
         # TODO: Check that this makes any sense at all? Seems as though we should calculate kappa for each instance or
         #  each lemma and then average them or something. p_e is effectively 0 due to very large number of total labels
         #  currently.
         return score
 
-    def iaa_lemma(self, lemma: str):
+    def iaa_lemma(self, lemma: str, with_merging=True):
         """ Randolphs Kappa for specific lemma"""
-        pass
+        annotations = []
+        total_labels = set()
+        for entry in self.entries:
+            if entry.lemma == lemma and entry.raw_labels is not None:
+                total_labels.update(self._count_possible_labels(entry, with_merging=with_merging))
+                annotations.append(self._count_labels(entry, with_merging=with_merging))
+        score = _randolphs_kappa(annotations, len(total_labels))
+        return score
+
+    def _count_labels(self, entry, with_merging=True):
+        label_counts = {}
+        for label in entry.raw_labels:
+            if with_merging and label in self.merge_map:
+                label = self.merge_map[label]
+            if label in label_counts:
+                label_counts[label] += 1
+            else:
+                label_counts[label] = 1
+        counts = [value for key, value in label_counts.items()]
+        return counts
+
+    def _count_possible_labels(self, entry, with_merging=True):
+        entry_labels = set()
+        lemmapos = entry.lemma + "#" + entry.upos
+        if lemmapos not in self.lemma_ids:
+            raise RuntimeError("Could not find lemmapos {} in mapping!".format(lemmapos))
+        else:
+            for label in self.lemma_ids[lemmapos]:
+                if with_merging and label in self.merge_map:
+                    entry_labels.add(self.merge_map[label])
+                else:
+                    entry_labels.add(label)
+        return entry_labels
 
 
 def _randolphs_kappa(annotations, n_labels):
@@ -210,15 +287,3 @@ def _randolphs_kappa(annotations, n_labels):
     p_o = nom / denom
     kappa = (p_o - p_e) / (1 - p_e)
     return kappa
-
-
-def load_lemma_labels():
-    filepath = ""
-    lemmapos_labels = {}
-    with open(filepath, "rt", encoding="utf8") as f:
-        for line in f:
-            line = line.strip().split("\t")
-            lemmapos = line[0]
-            labels = line[1:]
-            lemmapos_labels[lemmapos] = labels
-    return lemmapos_labels
