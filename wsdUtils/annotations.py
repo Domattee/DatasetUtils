@@ -1,8 +1,6 @@
 # Datastructure based on wsdUtils.WSDData WSDEntry
-# TODO: Compute IAA scores with randolphs kappa -> Special value -2 (skip) should be ignored
-#       Score 1: IAA including "no valid sense"
-#       Score 2: IAA excluding "no valid sense"
-#       IAA Matrix for each annotator
+# Compute IAA scores with randolphs kappa -> Special value -2 (skip) should be ignored
+#       IAA Matrix for each annotator pair
 # TODO: Functions to export Dataset in annotation format:
 #       sentence id / lemma / pivot start / pivot end / gold annotation / list of annotations from each annotator
 # Functions to manage gold labels in dataset:
@@ -20,6 +18,10 @@ from wsdUtils.dataset import WSDData, WSDEntry, WSDToken
 
 from typing import List, Union
 import json
+import os
+
+
+LEMMA_ID_PATH = os.path.abspath(os.path.join(os.path.abspath(__file__), "..", "..", "lemmaIds.txt"))
 
 
 class AnnotEntry(WSDEntry):
@@ -50,7 +52,7 @@ class AnnotData(WSDData):
         self.merge_targets = set()
         self.merge_reasons = {}
         self.lemma_ids = {}
-        self.load_lemma_labels("")
+        self.load_lemma_labels(LEMMA_ID_PATH)
 
     def add_entry(self, label: Union[str, None], lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
                   raw_labels=[], annotators=[], source_id: str = None, pivot_start: int = None, pivot_end: int = None):
@@ -110,7 +112,7 @@ class AnnotData(WSDData):
             mapped_label = label1
         self.merge_targets.add(target_label)
         self.merge_map[mapped_label] = target_label
-        return target_label
+        return mapped_label, target_label
 
     def _remap_labels(self):
         for entry in self.entries:
@@ -163,8 +165,8 @@ class AnnotData(WSDData):
         # Display the sentence, the two annotations and info on the two senses
         # Ask user on what to do:
         #   1. Pick gold sense      -> Add label to entry
-        #   2. Merge senses         -> Do merge process and add target label to entry
-        #   3. Skip                 -> ???
+        #   2. Merge senses         -> Do merge process and add target label to entry, also ask for reason?
+        #   3. Skip                 -> Get next, do later
         # If we merged -> assign new easy labels and remap entries
         # Continue
 
@@ -202,12 +204,36 @@ class AnnotData(WSDData):
             if anonymize:
                 dataset.anonymize()
 
+            return dataset
+
     @classmethod
     def _load_verb_db_dump(cls, filepath, anonymize=True):
         return cls._load_db_dump(filepath, "ttvc_2", "gn", "de", "VERB", anonymize=anonymize)
 
-    def load(self, outpath):
-        pass
+    def _load_entry_dict(self, json_entry, sentences):
+        entry_dict = super()._load_entry_dict(json_entry, sentences)
+        raw_labels = json_entry["raw_labels"]
+        annotators = json_entry["annotators"]
+        entry_dict["raw_labels"] = raw_labels
+        entry_dict["annotators"] = annotators
+        return entry_dict
+
+    @classmethod
+    def _load(cls, json_path):
+        dataset, loaded_json = super()._load(json_path)
+        dataset.merge_map = loaded_json["merge_map"]
+        dataset.merge_targets = set(loaded_json["merge_targets"])
+        dataset.merge_reasons = loaded_json["merge_reasons"]
+        dataset.lemma_ids = loaded_json["lemma_ids"]
+        return dataset, loaded_json
+
+    def save(self, outpath):
+        # Save as with super, but also separately write out merge file
+        super().save(outpath)
+        with open(os.path.join(os.path.dirname(outpath), "mergeMap.txt"), "wt", encoding="utf8", newline="") as f:
+            f.write("old\tnew\treason\n")
+            for key in self.merge_map:
+                f.write(key + "\t" + self.merge_map[key] + "\t" + self.merge_reasons[key] + "\n")
 
     def load_lemma_labels(self, inpath):
         with open(inpath, "rt", encoding="utf8") as f:
@@ -250,6 +276,8 @@ class AnnotData(WSDData):
     def _count_labels(self, entry, with_merging=True):
         label_counts = {}
         for label in entry.raw_labels:
+            if label == "-2":
+                continue
             if with_merging and label in self.merge_map:
                 label = self.merge_map[label]
             if label in label_counts:
@@ -272,6 +300,30 @@ class AnnotData(WSDData):
                     entry_labels.add(label)
         return entry_labels
 
+    def count_unprocessed_entries(self):
+        return len(self.unprocessed_entries())
+
+    def count_unprocessable_entries(self):
+        counter = 0
+        for entry in self.entries:
+            if not entry.can_be_labeled:
+                counter += 1
+        return counter
+
+    def count_entries_to_review(self):
+        counter = 0
+        for entry in self.entries:
+            if entry.raw_labels is not None and entry.can_be_labeled and len(set(entry.raw_labels)) > 1:
+                counter += 1
+        return counter
+
+    def count_multiply_annotated(self):
+        counter = 0
+        for entry in self.entries:
+            if entry.raw_labels is not None and len(entry.raw_labels) > 1:
+                counter += 1
+        return counter
+
 
 def _randolphs_kappa(annotations, n_labels):
     """ Computes randolphs kappa for a given annotation matrix. Annotation matrix stores the number of annotations per
@@ -286,8 +338,12 @@ def _randolphs_kappa(annotations, n_labels):
         rater_count = sum(instance)
         if rater_count < 2:
             continue
-        nom += sum(count * (count + 1) for count in instance) / (rater_count - 1)
+        print(instance)
+        print(sum(count * (count - 1) for count in instance) / (rater_count - 1))
+        print(rater_count)
+        nom += sum(count * (count - 1) for count in instance) / (rater_count - 1)
         denom += rater_count
     p_o = nom / denom
+    print(p_e, p_o)
     kappa = (p_o - p_e) / (1 - p_e)
     return kappa

@@ -177,8 +177,59 @@ class WSDData:
         self.entries.append(WSDEntry(self, idx, label, lemma, upos,
                                      source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end))
 
+    def _load_sentences(self, loaded):
+        sentences = {}
+        for sentence_id, sent_with_tokens in loaded["_sentences"].items():
+            sentence = sent_with_tokens["sentence"]
+            tokens = []
+            for json_token in sent_with_tokens["tokens"]:
+                tokens.append(WSDToken(json_token["form"],
+                                       json_token["lemma"],
+                                       json_token["pos"],
+                                       json_token["begin"],
+                                       json_token["end"],
+                                       upos=json_token["upos"]
+                                       ))
+            sentences[int(sentence_id)] = SentenceWithTokens(sentence, tokens)
+        return sentences
+
+    def _load_entry_dict(self, json_entry, sentences):
+        label = json_entry["label"]
+        target_lemma = json_entry["lemma"]
+        entry_pos = json_entry["upos"]
+        sentence_idx = int(json_entry["sentence_idx"])
+        source = load_opt(json_entry, "source_id", default=None)
+        pivot_start = load_opt(json_entry, "pivot_start", default=None)
+        if pivot_start is not None:
+            pivot_start = int(pivot_start)
+        pivot_end = load_opt(json_entry, "pivot_end", default=None)
+        if pivot_end is not None:
+            pivot_end = int(pivot_end)
+        sentence = sentences[sentence_idx].sentence
+        tokens = sentences[sentence_idx].tokens
+        if sentence in self._sentence_cache:
+            assert self._sentence_cache[sentence] == sentence_idx
+        else:
+            self._sentence_cache[sentence] = sentence_idx
+        entry_dict = {
+            "label": label,
+            "lemma": target_lemma,
+            "upos": entry_pos,
+            "sentence": sentence,
+            "tokens": tokens,
+            "source_id": source,
+            "pivot_start": pivot_start,
+            "pivot_end": pivot_end,
+        }
+        return entry_dict
+
+    def _load_entries(self, loaded, sentences):
+        for entry in loaded["entries"]:
+            entry_dict = self._load_entry_dict(entry, sentences)
+            self.add_entry(**entry_dict)
+
     @classmethod
-    def load(cls, json_path: str):
+    def _load(cls, json_path: str):
         with open(json_path, "r", encoding="utf8") as f:
             loaded = json.load(f)
             lang = loaded["lang"]
@@ -186,50 +237,14 @@ class WSDData:
             labeltype = loaded["labeltype"]
             assert labeltype in VALID_LABELTYPES
             dataset = cls(name, lang, labeltype)
-            sentences = {}
-            for sentence_id, sent_with_tokens in loaded["_sentences"].items():
-                sentence = sent_with_tokens["sentence"]
-                tokens = []
-                for json_token in sent_with_tokens["tokens"]:
-                    tokens.append(WSDToken(json_token["form"],
-                                           json_token["lemma"],
-                                           json_token["pos"],
-                                           json_token["begin"],
-                                           json_token["end"],
-                                           upos=json_token["upos"]
-                                           ))
-                sentences[int(sentence_id)] = SentenceWithTokens(sentence, tokens)
-
-            for entry in loaded["entries"]:
-                label = entry["label"]
-                target_lemma = entry["lemma"]
-                entry_pos = entry["upos"]
-                sentence_idx = int(entry["sentence_idx"])
-                sentence = sentences[sentence_idx].sentence
-                tokens = sentences[sentence_idx].tokens
-                if sentence in dataset._sentence_cache:
-                    assert dataset._sentence_cache[sentence] == sentence_idx
-                else:
-                    dataset._sentence_cache[sentence] = sentence_idx
-                source = load_opt(entry, "source_id", default=None)
-                pivot_start = load_opt(entry, "pivot_start", default=None)
-                if pivot_start is not None:
-                    pivot_start = int(pivot_start)
-                pivot_end = load_opt(entry, "pivot_end", default=None)
-                if pivot_end is not None:
-                    pivot_end = int(pivot_end)
-
-                dataset.add_entry(
-                    label,
-                    target_lemma,
-                    entry_pos,
-                    sentence,
-                    tokens=tokens,
-                    source_id=source,
-                    pivot_start=pivot_start,
-                    pivot_end=pivot_end
-                )
+            sentences = dataset._load_sentences(loaded)
+            dataset._load_entries(loaded, sentences)
             dataset._sentences = sentences
+        return dataset, loaded
+
+    @classmethod
+    def load(cls, json_path: str):
+        dataset, _ = cls._load(json_path)
         return dataset
 
     @classmethod
@@ -391,6 +406,16 @@ class WSDData:
         matching_entries = []
         for entry in self.entries:
             if entry.source_id in ids_other:
+                matching_entries.append(entry)
+        self.entries = matching_entries
+        self._clean_sentences()
+
+    def sub(self, other: 'WSDData'):
+        """ Removes all entries from this dataset with source-ids in the other dataset """
+        ids_other = set([entry.source_id for entry in other.entries])
+        matching_entries = []
+        for entry in self.entries:
+            if entry.source_id not in ids_other:
                 matching_entries.append(entry)
         self.entries = matching_entries
         self._clean_sentences()
