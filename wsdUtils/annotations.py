@@ -33,8 +33,11 @@ class AnnotEntry(WSDEntry):
                  pivot_start: int = None, pivot_end: int = None):
         super().__init__(dataset, sentence_idx, label, lemma, upos,
                          source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end)
-        if raw_labels is not None or annotators is not None:
-            assert len(raw_labels) == len(annotators)
+        if annotators is None:
+            annotators = []
+        if raw_labels is None:
+            raw_labels = []
+        assert len(raw_labels) == len(annotators)
         self.raw_labels = raw_labels
         self.annotators = annotators
 
@@ -55,7 +58,8 @@ class AnnotData(WSDData):
         self.load_lemma_labels(LEMMA_ID_PATH)
 
     def add_entry(self, label: Union[str, None], lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
-                  raw_labels=[], annotators=[], source_id: str = None, pivot_start: int = None, pivot_end: int = None):
+                  raw_labels: List[str] = [], annotators: List[str] = [], source_id: str = None,
+                  pivot_start: int = None, pivot_end: int = None):
         idx = self._add_sentence(sentence, tokens)
         self.entries.append(AnnotEntry(self, idx, label, lemma, upos, raw_labels=raw_labels, annotators=annotators,
                                        source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end))
@@ -66,6 +70,12 @@ class AnnotData(WSDData):
             if entry.label is None and (include_without_valid or (not include_without_valid and entry.can_be_labeled)):
                 out.append(entry)
         return out
+
+    def annotators(self):
+        annotators = set()
+        for entry in self.entries:
+            annotators.update(entry.annotators)
+        return sorted(list(annotators))
 
     def anonymize(self):
         """ Replaces all annotators with numbers and generates a dictionary containing the replacement mapping """
@@ -180,12 +190,11 @@ class AnnotData(WSDData):
         counter = 0
         for entry in self.unprocessed_entries(include_without_valid=True):
             # Get raw labels
-            labels = self._remap_raw_labels(entry)
+            labels = set(self._remap_raw_labels(entry))
             if len(labels) < 2:  # Boring entry, nothing to do
                 continue
             # Do the whole thing
             option, value = self._select_how_to_handle_entry(entry)
-            print(option, value)
             counter += 1
             if option == "gold":
                 entry.label = value
@@ -247,7 +256,8 @@ class AnnotData(WSDData):
                            "Indistinguishable\n"
                            "Circular\n"
                            "Metaphorical\n"
-                           "Obsolete or dialectical\n\n")
+                           "Obsolete or dialectical\n")
+            print("\n")
             return "merge", reason
         elif option == skip_option:
             return "skip", 0
@@ -346,10 +356,20 @@ class AnnotData(WSDData):
 
     def save_as_publishable(self, outpath):
         # Print out a csv file with: source-id, gold label, annotations for each annotator
+        annotators = self.annotators()
         with open(outpath, "wt", encoding="utf8", newline="") as f:
-            f.write("Sentence\tlemma\tgold\n")
+            f.write("Sentence\tlemma\tgold\t" + "\t".join(annotators) + "\n")
             for entry in self.entries:
-                f.write(entry.source_id + "\t" + entry.lemma + "\t" + entry.label + "\t")
+                annotations = []
+                for annotator in annotators:
+                    if annotator not in entry.annotators:
+                        annotations.append("-")
+                    else:
+                        annotations.append(entry.raw_labels[entry.annotators.index(annotator)])
+                f.write(entry.source_id +
+                        "\t" + entry.lemma +
+                        "\t" + entry.label + 
+                        "\t" + "\t".join(annotations) + "\n")
 
     def load_lemma_labels(self, inpath):
         with open(inpath, "rt", encoding="utf8") as f:
