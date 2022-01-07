@@ -14,7 +14,7 @@
 #       Sentences with single label or two identical labels -> Gold label is that label.
 # TODO: Make lemma id file for all germanet verbs
 
-from wsdUtils.dataset import WSDData, WSDEntry, WSDToken
+from wsdUtils.dataset import WSDData, WSDEntry, WSDToken, LABEL_PREFIXES
 
 from typing import List, Union
 import json
@@ -26,7 +26,7 @@ LEMMA_ID_PATH = os.path.abspath(os.path.join(os.path.abspath(__file__), "..", ".
 
 class AnnotEntry(WSDEntry):
 
-    SPECIAL_LABELS = ["-1", "-2"]
+    SPECIAL_LABELS = ["gn:-1", "gn:-2"]
 
     def __init__(self, dataset: "AnnotData", sentence_idx: int, label: str, lemma: str, upos: str,
                  raw_labels: List[str] = [], annotators: List[str] = [], source_id: str = None,
@@ -60,10 +60,10 @@ class AnnotData(WSDData):
         self.entries.append(AnnotEntry(self, idx, label, lemma, upos, raw_labels=raw_labels, annotators=annotators,
                                        source_id=source_id, pivot_start=pivot_start, pivot_end=pivot_end))
 
-    def unprocessed_entries(self):
+    def unprocessed_entries(self, include_without_valid=False):
         out = []
         for entry in self.entries:
-            if entry.label is None and entry.can_be_labeled:
+            if entry.label is None and (include_without_valid or (not include_without_valid and entry.can_be_labeled)):
                 out.append(entry)
         return out
 
@@ -90,7 +90,7 @@ class AnnotData(WSDData):
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
 
-    def _merge_labels(self, label1, label2):
+    def _merge_labels(self, label1, label2, reason: str = ""):
         # Handles the bureaucracy of selecting two labels for merging
         # If both label1 and label2 were already used as merge targets:
         #   Chose label1 as target
@@ -112,12 +112,22 @@ class AnnotData(WSDData):
             mapped_label = label1
         self.merge_targets.add(target_label)
         self.merge_map[mapped_label] = target_label
+        self.merge_reasons[mapped_label] = reason
         return mapped_label, target_label
 
     def _remap_labels(self):
         for entry in self.entries:
             if entry.label in self.merge_map:
                 entry.label = self.merge_map[entry.label]
+
+    def _remap_raw_labels(self, entry):
+        labels = []
+        for label in entry.raw_labels:
+            if label in self.merge_map:
+                labels.append(self.merge_map[label])
+            else:
+                labels.append(label)
+        return labels
 
     def write_merge_map(self, outfile):
         inverted_map = {}
@@ -148,39 +158,112 @@ class AnnotData(WSDData):
         # Easy entries are those where all manual annotations are identical, excluding special labels
         counter = 0
         for entry in self.unprocessed_entries():
-            labels = set()
-            for label in entry.raw_labels:
-                if label in self.merge_map:
-                    labels.add(self.merge_map[label])
-                else:
-                    labels.add(label)
+            labels = self._remap_raw_labels(entry)
             if len(labels) == 1:
                 counter += 1
-                label = list(labels)[0]
+                label = labels[0]
                 entry.label = label
         print("Filled in {} labels".format(counter))
 
     def process_hard_entries(self):
         # While there are unprocessed entries with differing annotations:
-        # Display the sentence, the two annotations and info on the two senses
+        # Display the sentence, the two annotations and info on the corresponding senses
         # Ask user on what to do:
         #   1. Pick gold sense      -> Add label to entry
         #   2. Merge senses         -> Do merge process and add target label to entry, also ask for reason?
         #   3. Skip                 -> Get next, do later
+        #   4. Stop processing, continue later
         # If we merged -> assign new easy labels and remap entries
-        # Continue
+        # Continue with next entry
 
         # Final step: Go over all entries and map them according to merge map to ensure consistency
-        #       Write out merge information in file
+        counter = 0
+        for entry in self.unprocessed_entries(include_without_valid=True):
+            # Get raw labels
+            labels = self._remap_raw_labels(entry)
+            if len(labels) < 2:  # Boring entry, nothing to do
+                continue
+            # Do the whole thing
+            option, value = self._select_how_to_handle_entry(entry)
+            print(option, value)
+            counter += 1
+            if option == "gold":
+                entry.label = value
+            elif option == "merge":
+                mapped, target = self._merge_labels(*labels, reason=value)
+                entry.label = target
+            elif option == "skip":
+                continue
+            else:
+                break
+        print("Manually processed {} entries".format(counter))
+        self.process_easy_entries()
+        self._remap_labels()
+
+    def _show_label_info(self, labels):
+        # Can't be bothered, just look it up on web api
         pass
+
+    def _select_how_to_handle_entry(self, entry):
+        labels = list(self._remap_raw_labels(entry))
+        options = []
+        for label in labels:
+            options.append(label)
+
+        options.append("Merge these senses")
+        merge_option = len(options)
+        options.append("Skip this sentence for now")
+        skip_option = len(options)
+        options.append("Stop processing for now")
+        break_option = len(options)
+
+        print("Select how to handle the following sentence:")
+        print(entry.sentence)
+        print(entry.lemma + "\t" + "\t".join(labels))
+        self._show_label_info(labels)
+        print("\nOptions are:")
+        for i, option in enumerate(options):
+            print(str(i + 1) + "\t" + options[i])
+        print("\n")
+
+        input_valid = False
+        option = -1
+        while not input_valid:
+            option_string = input("Please select one of the options above: ")
+            try:
+                option = int(option_string)
+                if 0 <= option <= break_option:
+                    input_valid = True
+            except ValueError:
+                input_valid = False
+                print("You must enter one of the numbers for the options above!")
+        # We now have our option.
+        if option == -1:
+            raise RuntimeError("Something went horribly wrong during input parsing")
+        if option < merge_option:
+            return "gold", labels[option - 1]
+        elif option == merge_option:
+            reason = input("\nWhy should these be merged?\n"
+                           "Indistinguishable\n"
+                           "Circular\n"
+                           "Metaphorical\n"
+                           "Obsolete or dialectical\n\n")
+            return "merge", reason
+        elif option == skip_option:
+            return "skip", 0
+        elif option == break_option:
+            return "break", 0
+        else:
+            raise RuntimeError("Something else went horribly wrong during input parsing")
 
     # =========== I/O ==============================================================================================
     # ==============================================================================================================
 
     @classmethod
-    def _load_db_dump(cls, filepath, name, labeltype, lang, upos, anonymize=True):
+    def _load_db_dump(cls, filepath, name, labeltype, lang, upos, anonymize=True, min_count=50):
         """ Load mongo dump. If anonymize is true we replace actual annotator names with numbers and write out a file
         with the labeling """
+        annotator_counts = {}
         with open(filepath, "r", encoding="utf8") as f:
             dataset = cls(name=name, labeltype=labeltype, lang=lang)
             loaded = json.load(f)
@@ -194,12 +277,38 @@ class AnnotData(WSDData):
                 annotations = []
                 annotators = []
                 for annotation in entry["annotations"]:
-                    annotations.append(annotation["annotation"])
+                    annotations.append(LABEL_PREFIXES[dataset.labeltype] + annotation["annotation"])
                     annotators.append(annotation["annotator"])
+                    if annotation["annotator"] in annotator_counts:
+                        annotator_counts[annotation["annotator"]] += 1
+                    else:
+                        annotator_counts[annotation["annotator"]] = 1
 
                 dataset.add_entry(label=None, lemma=entry_lemma, upos=upos, sentence=sentence, raw_labels=annotations,
                                   annotators=annotators, source_id=source_id, pivot_start=pivot_start,
                                   pivot_end=pivot_end)
+
+            # Filter out annotators with low annotation count (gets rid of test annotators if they got through to
+            # this stage, as well as any entries that are no longer annotated after this filtering)
+            low_count_annotators = [key for key, value in annotator_counts.items() if value < min_count]
+            filtered_entries = []
+            for entry in dataset.entries:
+                filtered_labels = []
+                filtered_annotators = []
+                for i in range(len(entry.raw_labels)):
+                    if entry.annotators[i] in low_count_annotators:
+                        continue
+                    else:
+                        filtered_labels.append(entry.raw_labels[i])
+                        filtered_annotators.append(entry.annotators[i])
+
+                if len(filtered_labels) > 0:
+                    entry.raw_labels = filtered_labels
+                    entry.annotators = filtered_annotators
+                    filtered_entries.append(entry)
+
+            dataset.entries = filtered_entries
+            dataset._clean_sentences()
 
             if anonymize:
                 dataset.anonymize()
@@ -208,7 +317,7 @@ class AnnotData(WSDData):
 
     @classmethod
     def _load_verb_db_dump(cls, filepath, anonymize=True):
-        return cls._load_db_dump(filepath, "ttvc_2", "gn", "de", "VERB", anonymize=anonymize)
+        return cls._load_db_dump(filepath, "ttvc_2", "gn", "de", "VERB", anonymize=anonymize, min_count=100)
 
     def _load_entry_dict(self, json_entry, sentences):
         entry_dict = super()._load_entry_dict(json_entry, sentences)
@@ -234,6 +343,13 @@ class AnnotData(WSDData):
             f.write("old\tnew\treason\n")
             for key in self.merge_map:
                 f.write(key + "\t" + self.merge_map[key] + "\t" + self.merge_reasons[key] + "\n")
+
+    def save_as_publishable(self, outpath):
+        # Print out a csv file with: source-id, gold label, annotations for each annotator
+        with open(outpath, "wt", encoding="utf8", newline="") as f:
+            f.write("Sentence\tlemma\tgold\n")
+            for entry in self.entries:
+                f.write(entry.source_id + "\t" + entry.lemma + "\t" + entry.label + "\t")
 
     def load_lemma_labels(self, inpath):
         with open(inpath, "rt", encoding="utf8") as f:
@@ -338,12 +454,21 @@ def _randolphs_kappa(annotations, n_labels):
         rater_count = sum(instance)
         if rater_count < 2:
             continue
-        print(instance)
-        print(sum(count * (count - 1) for count in instance) / (rater_count - 1))
-        print(rater_count)
         nom += sum(count * (count - 1) for count in instance) / (rater_count - 1)
         denom += rater_count
     p_o = nom / denom
-    print(p_e, p_o)
     kappa = (p_o - p_e) / (1 - p_e)
     return kappa
+
+
+def load_and_process_data(inputfile, outputfile):
+    # TODO: Convenience function for loading a dataset from drive and processing annotations,
+    #  saving after we finish
+
+    dataset = AnnotData.load(inputfile)
+    print("{} entries left to annotate!".format(len(dataset.unprocessed_entries())))
+    # Do the whole thing
+    dataset.process_easy_entries()
+    dataset.process_hard_entries()
+    print("{} entries left to annotate!".format(len(dataset.unprocessed_entries())))
+    dataset.save(outputfile)

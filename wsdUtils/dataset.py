@@ -40,9 +40,17 @@ Its important that the 'lemma' and 'pos' field for the whole instance matches th
 # TODO: Should turn valid labeltypes into an enum or something of the sort, so we don't have to adjust a
 #  dozen files if we change names
 # TODO: Loading and saving seems very slow
-# TODO: Raganato saving and loading, with pivot info, etc...
+# TODO: Raganato saving with pivot info, etc...
 # TODO: Get rid of sentences as string and construct them from tokens maybe?
-VALID_LABELTYPES = ["wnoffsets", "bnids", "gn"]
+VALID_LABELTYPES = [
+    "wnoffsets",
+    "bnids",
+    "gn"]
+LABEL_PREFIXES = {
+    "gn": "gn:",
+    "wnoffsets": "wn:",
+    "bnids": "bn:",
+}
 
 
 class WSDToken:
@@ -181,15 +189,17 @@ class WSDData:
         sentences = {}
         for sentence_id, sent_with_tokens in loaded["_sentences"].items():
             sentence = sent_with_tokens["sentence"]
-            tokens = []
-            for json_token in sent_with_tokens["tokens"]:
-                tokens.append(WSDToken(json_token["form"],
-                                       json_token["lemma"],
-                                       json_token["pos"],
-                                       json_token["begin"],
-                                       json_token["end"],
-                                       upos=json_token["upos"]
-                                       ))
+            tokens = None
+            if sent_with_tokens["tokens"] is not None:
+                tokens = []
+                for json_token in sent_with_tokens["tokens"]:
+                    tokens.append(WSDToken(json_token["form"],
+                                           json_token["lemma"],
+                                           json_token["pos"],
+                                           json_token["begin"],
+                                           json_token["end"],
+                                           upos=json_token["upos"]
+                                           ))
             sentences[int(sentence_id)] = SentenceWithTokens(sentence, tokens)
         return sentences
 
