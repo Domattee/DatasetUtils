@@ -48,14 +48,15 @@ class AnnotEntry(WSDEntry):
 
 class AnnotData(WSDData):
 
-    def __init__(self, name: str, lang: str, labeltype: str):
+    def __init__(self, name: str, lang: str, labeltype: str, load_lemma_ids=False):
         super().__init__(name, lang, labeltype)
         self.entries: List[AnnotEntry] = []
         self.merge_map = {}
         self.merge_targets = set()
         self.merge_reasons = {}
         self.lemma_ids = {}
-        self.load_lemma_labels(LEMMA_ID_PATH)
+        if load_lemma_ids:
+            self.load_lemma_labels(LEMMA_ID_PATH)
 
     def add_entry(self, label: Union[str, None], lemma: str, upos: str, sentence: str, tokens: List[WSDToken] = None,
                   raw_labels: List[str] = [], annotators: List[str] = [], source_id: str = None,
@@ -100,7 +101,7 @@ class AnnotData(WSDData):
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
 
-    def _merge_labels(self, label1, label2, reason: str = ""):
+    def _merge_labels(self, label1, label2, reason: str = "", force_label1=False):
         # Handles the bureaucracy of selecting two labels for merging
         # If both label1 and label2 were already used as merge targets:
         #   Chose label1 as target
@@ -109,7 +110,8 @@ class AnnotData(WSDData):
         # If only label1 was already used, proceed as above but without the complicated check
         # If only label2 was already used, choose label 2 and proceed as above, but without the complicated check
         # If neither label was used, choose label1
-        if label1 in self.merge_targets or label2 not in self.merge_targets:
+        # If force_label1 is set we always choose label1 as merge target
+        if label1 in self.merge_targets or label2 not in self.merge_targets or force_label1:
             target_label = label1
             mapped_label = label2
             if label2 in self.merge_targets:
@@ -169,7 +171,7 @@ class AnnotData(WSDData):
         counter = 0
         for entry in self.unprocessed_entries():
             labels = self._remap_raw_labels(entry)
-            if len(labels) == 1:
+            if len(set(labels)) == 1:
                 counter += 1
                 label = labels[0]
                 entry.label = label
@@ -187,15 +189,26 @@ class AnnotData(WSDData):
         # Continue with next entry
 
         # Final step: Go over all entries and map them according to merge map to ensure consistency
-        counter = 0
+
+        # sort entries by label first
+        lemma_entries = {}
         for entry in self.unprocessed_entries(include_without_valid=True):
+            if entry.lemma in lemma_entries:
+                lemma_entries[entry.lemma].append(entry)
+            else:
+                lemma_entries[entry.lemma] = [entry]
+        sorted_entries = []
+        for key in lemma_entries:
+            sorted_entries.extend(lemma_entries[key])
+
+        counter = 0
+        for entry in sorted_entries:
             # Get raw labels
             labels = set(self._remap_raw_labels(entry))
             if len(labels) < 2:  # Boring entry, nothing to do
                 continue
             # Do the whole thing
             option, value = self._select_how_to_handle_entry(entry)
-            counter += 1
             if option == "gold":
                 entry.label = value
             elif option == "merge":
@@ -205,6 +218,7 @@ class AnnotData(WSDData):
                 continue
             else:
                 break
+            counter += 1
         print("Manually processed {} entries".format(counter))
         self.process_easy_entries()
         self._remap_labels()
@@ -221,6 +235,10 @@ class AnnotData(WSDData):
 
         options.append("Merge these senses")
         merge_option = len(options)
+        options.append("Insufficient context")
+        missing_context = len(options)
+        options.append("No valid sense")
+        no_sense = len(options)
         options.append("Skip this sentence for now")
         skip_option = len(options)
         options.append("Stop processing for now")
@@ -230,35 +248,30 @@ class AnnotData(WSDData):
         print(entry.sentence)
         print(entry.lemma + "\t" + "\t".join(labels))
         self._show_label_info(labels)
-        print("\nOptions are:")
-        for i, option in enumerate(options):
-            print(str(i + 1) + "\t" + options[i])
-        print("\n")
 
-        input_valid = False
-        option = -1
-        while not input_valid:
-            option_string = input("Please select one of the options above: ")
-            try:
-                option = int(option_string)
-                if 0 <= option <= break_option:
-                    input_valid = True
-            except ValueError:
-                input_valid = False
-                print("You must enter one of the numbers for the options above!")
+        option = _get_numbered_options("Select the appropriate option from below:", options)
         # We now have our option.
         if option == -1:
             raise RuntimeError("Something went horribly wrong during input parsing")
         if option < merge_option:
             return "gold", labels[option - 1]
         elif option == merge_option:
-            reason = input("\nWhy should these be merged?\n"
-                           "Indistinguishable\n"
-                           "Circular\n"
-                           "Metaphorical\n"
-                           "Obsolete or dialectical\n")
-            print("\n")
-            return "merge", reason
+            reasons = ["Indistinguishable", "Circular", "Metaphorical", "Obsolete or dialectical"]
+            reason_choice = _get_numbered_options("\nWhy should these be merged?", reasons) - 1
+            reason = reasons[reason_choice]
+            # If we have a metaphorical or obsolete/dialectical we have to ask for base label
+            if reason == "Metaphorical" or reason == "Obsolete or dialectical":
+                label_choice = _get_numbered_options("\nWhich label is the base label?", labels) - 1
+                base_label = labels[label_choice]
+                other_label = labels[not label_choice]
+                self._merge_labels(base_label, other_label, force_label1=True)
+                return "gold", base_label
+            else:
+                return "merge", reason
+        elif option == missing_context:
+            return "gold", "-2"
+        elif option == no_sense:
+            return "gold", "-1"
         elif option == skip_option:
             return "skip", 0
         elif option == break_option:
@@ -275,7 +288,7 @@ class AnnotData(WSDData):
         with the labeling """
         annotator_counts = {}
         with open(filepath, "r", encoding="utf8") as f:
-            dataset = cls(name=name, labeltype=labeltype, lang=lang)
+            dataset = cls(name=name, labeltype=labeltype, lang=lang, load_lemma_ids=True)
             loaded = json.load(f)
             for entry in loaded:
                 source_id = entry["sentence_id"]
@@ -479,6 +492,27 @@ def _randolphs_kappa(annotations, n_labels):
     p_o = nom / denom
     kappa = (p_o - p_e) / (1 - p_e)
     return kappa
+
+
+def _get_numbered_options(question, options):
+    print(question)
+    print("\nOptions are:")
+    for i, option in enumerate(options):
+        print(str(i + 1) + "\t" + options[i])
+    print("\n")
+
+    input_valid = False
+    option = -1
+    while not input_valid:
+        option_string = input("Please select one of the options above: ")
+        try:
+            option = int(option_string)
+            if 0 < option <= len(options):
+                input_valid = True
+        except ValueError:
+            input_valid = False
+            print("You must enter one of the numbers for the options above!")
+    return option
 
 
 def load_and_process_data(inputfile, outputfile):
