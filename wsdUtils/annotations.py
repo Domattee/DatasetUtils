@@ -45,6 +45,15 @@ class AnnotEntry(WSDEntry):
     def can_be_labeled(self):
         return any([label not in AnnotEntry.SPECIAL_LABELS for label in self.raw_labels])
 
+    def get_dict(self):
+        wsd_dict = super().get_dict()
+        wsd_dict["raw_labels"] = self.raw_labels
+        wsd_dict["annotators"] = self.annotators
+        return wsd_dict
+
+    def get_wsd_dict(self):
+        return super().get_dict()
+
 
 class AnnotData(WSDData):
 
@@ -97,6 +106,13 @@ class AnnotData(WSDData):
         with open("annotator_names.txt", "wt", encoding="utf8", newline="") as f:
             for annotator_name in annotator_labels:
                 f.write(annotator_name + "\t" + annotator_labels[annotator_name] + "\n")
+
+    def to_WSDData(self):
+        dataset = WSDData(name=self.name, lang=self.lang, labeltype=self.labeltype)
+        for entry in self.entries:
+            if not (entry.label is None or entry.label in AnnotEntry.SPECIAL_LABELS):
+                dataset.add_entry(**entry.get_wsd_dict())
+        return dataset
 
     # =========== Merging related functions ========================================================================
     # ==============================================================================================================
@@ -166,10 +182,10 @@ class AnnotData(WSDData):
     # =========== Processing entries without gold ==================================================================
     # ==============================================================================================================
 
-    def process_easy_entries(self):
+    def process_easy_entries(self, include_without_valid=False):
         # Easy entries are those where all manual annotations are identical, excluding special labels
         counter = 0
-        for entry in self.unprocessed_entries():
+        for entry in self.unprocessed_entries(include_without_valid=include_without_valid):
             labels = self._remap_raw_labels(entry)
             if len(set(labels)) == 1:
                 counter += 1
@@ -264,7 +280,7 @@ class AnnotData(WSDData):
                 label_choice = _get_numbered_options("\nWhich label is the base label?", labels) - 1
                 base_label = labels[label_choice]
                 other_label = labels[not label_choice]
-                self._merge_labels(base_label, other_label, force_label1=True)
+                self._merge_labels(base_label, other_label, reason=reason, force_label1=True)
                 return "gold", base_label
             else:
                 return "merge", reason

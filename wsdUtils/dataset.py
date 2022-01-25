@@ -464,8 +464,6 @@ class WSDData:
         return len(self._sentence_cache)
 
     def map_labels(self, mapping_dict, new_labeltype: str, no_map="skip", in_place: bool = True):
-        # TODO: in_place. Need to deep copy entries and tokens to avoid list copy type bugs, don't want to do that
-        #  though because of memory. May not actually be a concern. Don't need this feature anymore either though.
         if not in_place:
             raise NotImplementedError
         mapped_entries = []
@@ -528,15 +526,19 @@ class WSDData:
                 lemma_frequencies[entry.lemma] = 1
         return lemma_frequencies
 
-    def get_statistics(self, pprint=True):
+    def get_statistics(self, pprint=True, skip_unlabeled=False):
         lemma_sense_map = {}
         lemma_sense_dist = {}
         lemma_dist = {}
         word_sense_dist = {}
         labels = set()
         statistics_dict = {}
+        num_instances = 0
 
         for entry in self.entries:
+            if skip_unlabeled and entry.label is None:
+                continue
+            num_instances += 1
             key = entry.lemma + "#" + entry.upos
             labels.add(entry.label)
             if key in lemma_sense_map:
@@ -570,14 +572,14 @@ class WSDData:
         average_word_polysemy = 0
         for key in lemma_dist:
             average_word_polysemy += lemma_dist[key] * len(lemma_sense_map[key])
-        average_word_polysemy = average_word_polysemy / len(self.entries)
+        average_word_polysemy = average_word_polysemy / num_instances
 
         average_lemma_polysemy = 0
         for i in lemma_sense_dist:
             average_lemma_polysemy += i * lemma_sense_dist[i]
         average_lemma_polysemy = average_lemma_polysemy / len(lemma_sense_map)
 
-        statistics_dict["Number of Instances"] = len(self.entries)
+        statistics_dict["Number of Instances"] = num_instances
         statistics_dict["Distinct senses"] = len(labels)
         statistics_dict["Distinct lemmas"] = len(lemma_sense_map)
         statistics_dict["Lemma polysemy distribution"] = lemma_sense_dist
