@@ -285,9 +285,9 @@ class AnnotData(WSDData):
             else:
                 return "merge", reason
         elif option == missing_context:
-            return "gold", "-2"
+            return "gold", "gn:-2"
         elif option == no_sense:
-            return "gold", "-1"
+            return "gold", "gn:-1"
         elif option == skip_option:
             return "skip", 0
         elif option == break_option:
